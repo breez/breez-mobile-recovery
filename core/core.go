@@ -512,6 +512,9 @@ type SyncProgress struct {
 	// of the newest one, which is how far in time the check has got.
 	Found       int   `json:"found"`
 	ThroughTime int64 `json:"throughTime"`
+	// Remaining is a rough estimate in seconds from the rate so far, or
+	// -1 while there is not enough data.
+	Remaining int64 `json:"remaining"`
 }
 
 // WaitSynced blocks until lnd reports synced_to_chain, calling onProgress

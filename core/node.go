@@ -101,6 +101,7 @@ var rescan struct {
 	found         int   // wallet transactions seen so far
 	throughTime   int64 // timestamp of the newest one
 	startTime     int64 // wallet synced-to timestamp when the check began
+	wallStart     int64 // wall clock when the check began
 }
 
 var (
@@ -247,7 +248,7 @@ func (n *node) waitSynced(ctx context.Context, onProgress func(SyncProgress)) er
 				onProgress(p)
 				return nil
 			}
-			if p.Height != last.Height || p.Stage != last.Stage || p.Peers != last.Peers || p.ThroughTime != last.ThroughTime {
+			if p.Height != last.Height || p.Stage != last.Stage || p.Peers != last.Peers || p.ThroughTime != last.ThroughTime || p.Remaining != last.Remaining {
 				onProgress(p)
 				last = p
 			}
@@ -291,16 +292,24 @@ func syncProgress(info *lnrpc.GetInfoResponse) SyncProgress {
 		// is the timestamp of the block the wallet has scanned through
 		// (BtcWallet.IsSynced returns Manager.SyncedTo().Timestamp), so
 		// progress is measured in time and moves with every block.
+		now := time.Now().Unix()
 		rescan.Lock()
 		if rescan.startTime == 0 && info.BestHeaderTimestamp > 0 {
 			rescan.startTime = info.BestHeaderTimestamp
+			rescan.wallStart = now
 		}
-		found, startTime := rescan.found, rescan.startTime
+		found, startTime, wallStart := rescan.found, rescan.startTime, rescan.wallStart
 		rescan.Unlock()
-		now := time.Now().Unix()
 		through := info.BestHeaderTimestamp
 		p.Found, p.ThroughTime = found, through
 		p.Target = target
+		p.Remaining = -1
+		// Rough time left: chain time covered per wall second so far,
+		// once a minute of data exists.
+		if wallStart > 0 && now-wallStart >= 60 && through > startTime {
+			rate := float64(through-startTime) / float64(now-wallStart)
+			p.Remaining = int64(float64(now-through) / rate)
+		}
 		if through <= 0 || startTime <= 0 || now <= startTime {
 			p.Percent = -1
 			p.Height = start
@@ -308,8 +317,8 @@ func syncProgress(info *lnrpc.GetInfoResponse) SyncProgress {
 			return p
 		}
 		p.Percent = float64(through-startTime) / float64(now-startTime) * 100
-		if p.Percent > 99 {
-			p.Percent = 99
+		if p.Percent > 99.9 {
+			p.Percent = 99.9
 		}
 		// Block estimate from time: ten minutes per block on average.
 		p.Height = target - uint32((now-through)/600)
