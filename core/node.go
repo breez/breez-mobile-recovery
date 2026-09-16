@@ -98,6 +98,7 @@ var rescan struct {
 	sync.Mutex
 	start, height uint32
 	addresses     int
+	found         int // wallet transactions seen so far
 }
 
 var (
@@ -202,6 +203,30 @@ func estimatedTip() uint32 {
 	return tipAnchor.height + uint32(elapsed/(10*time.Minute))
 }
 
+// trackTransactions polls the wallet's transaction list. While btcwallet
+// rescans, transactions show up as their blocks are reached, so the
+// highest block among them is how far the scan has verifiably got.
+func (n *node) trackTransactions(ctx context.Context) {
+	c, cancel := context.WithTimeout(ctx, 20*time.Second)
+	defer cancel()
+	res, err := n.client.GetTransactions(c, &lnrpc.GetTransactionsRequest{})
+	if err != nil {
+		return
+	}
+	var through uint32
+	for _, tx := range res.Transactions {
+		if tx.BlockHeight > 0 && uint32(tx.BlockHeight) > through {
+			through = uint32(tx.BlockHeight)
+		}
+	}
+	rescan.Lock()
+	rescan.found = len(res.Transactions)
+	if through > rescan.height {
+		rescan.height = through
+	}
+	rescan.Unlock()
+}
+
 // waitSynced polls GetInfo until lnd reports synced_to_chain, reporting
 // progress on every change.
 func (n *node) waitSynced(ctx context.Context, onProgress func(SyncProgress)) error {
@@ -209,6 +234,9 @@ func (n *node) waitSynced(ctx context.Context, onProgress func(SyncProgress)) er
 	for {
 		info, err := n.info(ctx)
 		if err == nil {
+			if !info.SyncedToChain && info.BlockHeight+3 >= estimatedTip() {
+				n.trackTransactions(ctx)
+			}
 			p := syncProgress(info)
 			if p.Synced() {
 				onProgress(p)
@@ -254,15 +282,27 @@ func syncProgress(info *lnrpc.GetInfoResponse) SyncProgress {
 		rescan.Lock()
 		start, height, addresses := rescan.start, rescan.height, rescan.addresses
 		rescan.Unlock()
-		// lnd reports no per-block progress for this phase, so the bar
-		// is indeterminate. Say what is happening and since when.
-		p.Percent = -1
+		// lnd reports no per-block progress for this phase. The wallet's
+		// transactions are discovered in block order as the scan reaches
+		// them, so the highest block among them is a verified lower
+		// bound of how far it got.
+		rescan.Lock()
+		found := rescan.found
+		rescan.Unlock()
 		p.Height, p.Target = height, target
 		switch {
 		case start == 0:
-			p.Message = "Reached the chain tip. Checking the wallet's history block by block; this is the slow part of a first sync and lnd gives no progress for it."
+			p.Percent = -1
+			p.Message = "Reached the chain tip. Checking the wallet's history block by block; this is the slow part of a first sync."
+		case found == 0 || height <= start || target <= start:
+			p.Percent = -1
+			p.Message = fmt.Sprintf("Checking every block since block %d for the wallet's %d addresses. Progress shows once the first transaction is found.", start, addresses)
 		default:
-			p.Message = fmt.Sprintf("Checking every block since block %d for the wallet's %d addresses, up to block %d. lnd gives no progress for this step; with a good peer it takes 10 to 30 minutes for a wallet from 2019.", start, addresses, target)
+			p.Percent = float64(height-start) / float64(target-start) * 100
+			if p.Percent > 99 {
+				p.Percent = 99
+			}
+			p.Message = fmt.Sprintf("Checked the wallet's history at least through block %d of %d, %d transactions found so far. Progress moves each time a transaction is found.", height, target, found)
 		}
 	default:
 		p.Stage = "headers"

@@ -305,7 +305,7 @@
     const m = Math.floor((Date.now() - ui.rescanStart) / 60000);
     return m < 1 ? "just started" : m + " min so far";
   }
-  setInterval(() => { if (ui.screen === "sync" && ui.rescanStart) $("#sync-percent").textContent = elapsed(); }, 15000);
+  setInterval(() => { if (ui.screen === "sync" && ui.rescanStart && $("#sync-fill").classList.contains("indeterminate")) $("#sync-percent").textContent = elapsed(); }, 15000);
   function setStage(stage) {
     const idx = stageOrder.indexOf(stage);
     $$("#sync-stages .stage").forEach((s) => {
@@ -327,10 +327,10 @@
     const pct = unknown ? 0 : Math.max(0, Math.min(100, p.percent || 0));
     $("#sync-fill").style.width = unknown ? "100%" : pct + "%";
     $("#sync-fill").classList.toggle("indeterminate", unknown);
-    $("#sync-percent").textContent = unknown ? elapsed() : Math.floor(pct) + "%";
+    $("#sync-percent").textContent = unknown ? elapsed() : Math.floor(pct) + "%" + (ui.rescanStart ? ", " + elapsed() : "");
     if (p.stage === "rescan") {
       if (!ui.rescanStart) ui.rescanStart = Date.now();
-      $("#sync-blocks").textContent = "checking history since block " + (p.height || 0).toLocaleString("en-US");
+      $("#sync-blocks").textContent = unknown ? "checking history since block " + (p.height || 0).toLocaleString("en-US") : "block " + p.height.toLocaleString("en-US") + " of " + p.target.toLocaleString("en-US");
     } else {
       ui.rescanStart = 0;
       $("#sync-blocks").textContent = p.height ? "block " + p.height.toLocaleString("en-US") + " of about " + p.target.toLocaleString("en-US") : "";

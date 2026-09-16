@@ -32,7 +32,7 @@ counts once a real backup went through the app on that OS. Steps:
 
 | Backup source | Linux | macOS | Windows |
 |---|---|---|---|
-| Google Drive | in progress, roys, 2026-09-16 | not run | not run |
+| Google Drive | steps 1 to 3, roys, 2026-09-16 (node from 2019, 938 addresses: history check took 90 min) | not run | not run |
 | iCloud | not run | not run | not run |
 | Backup file | steps 2 and 3 on a fresh node with no funds, 2026-09-16 | not run | not run |
 
