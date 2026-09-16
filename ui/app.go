@@ -11,7 +11,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/breez/breez-recovery/core"
+	"github.com/breez/breez-mobile-recovery/core"
 	wruntime "github.com/wailsapp/wails/v2/pkg/runtime"
 )
 

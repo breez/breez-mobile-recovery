@@ -108,8 +108,8 @@ every updated Windows 10/11 has.
 cd ui
 wails build -skipbindings \
   -ldflags "-X main.version=1.0.0 \
-            -X github.com/breez/breez-recovery/core.GoogleClientID=<id> \
-            -X github.com/breez/breez-recovery/core.GoogleClientSecret=<secret>"
+            -X github.com/breez/breez-mobile-recovery/core.GoogleClientID=<id> \
+            -X github.com/breez/breez-mobile-recovery/core.GoogleClientSecret=<secret>"
 # Linux with webkit2gtk 4.1: add -tags webkit2_41
 # other targets: -platform darwin/universal | windows/amd64 | linux/amd64
 ```
@@ -134,7 +134,7 @@ choose Open the first time, or run
 ## Command line tool
 
 ```sh
-go build -ldflags "-X github.com/breez/breez-recovery/core.GoogleClientID=<id> -X github.com/breez/breez-recovery/core.GoogleClientSecret=<secret>" .
+go build -ldflags "-X github.com/breez/breez-mobile-recovery/core.GoogleClientID=<id> -X github.com/breez/breez-mobile-recovery/core.GoogleClientSecret=<secret>" .
 ```
 
 ```
@@ -159,7 +159,7 @@ The defaults are the production values from the `breez.conf` and `lnd.conf`
 bundled in the released APK (`assets/flutter_assets/conf`). The LSP token
 is not bundled; it is only needed for LSP features, not for closing
 channels or sweeping. Bake it in with
-`-X github.com/breez/breez-recovery/core.LSPToken=...` if wanted.
+`-X github.com/breez/breez-mobile-recovery/core.LSPToken=...` if wanted.
 
 ## Notes
 

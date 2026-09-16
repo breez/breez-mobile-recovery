@@ -64,15 +64,15 @@ jobs:
         env:
           LDFLAGS: >-
             -X main.version=${{ steps.version.outputs.version }}
-            -X github.com/breez/breez-recovery/core.GoogleClientID=${{ secrets.RECOVERY_GOOGLE_CLIENT_ID }}
-            -X github.com/breez/breez-recovery/core.GoogleClientSecret=${{ secrets.RECOVERY_GOOGLE_CLIENT_SECRET }}
+            -X github.com/breez/breez-mobile-recovery/core.GoogleClientID=${{ secrets.RECOVERY_GOOGLE_CLIENT_ID }}
+            -X github.com/breez/breez-mobile-recovery/core.GoogleClientSecret=${{ secrets.RECOVERY_GOOGLE_CLIENT_SECRET }}
         run: wails build -platform ${{ matrix.platform }} -skipbindings -ldflags "$LDFLAGS"
 
       - name: Build CLI
         env:
           LDFLAGS: >-
-            -X github.com/breez/breez-recovery/core.GoogleClientID=${{ secrets.RECOVERY_GOOGLE_CLIENT_ID }}
-            -X github.com/breez/breez-recovery/core.GoogleClientSecret=${{ secrets.RECOVERY_GOOGLE_CLIENT_SECRET }}
+            -X github.com/breez/breez-mobile-recovery/core.GoogleClientID=${{ secrets.RECOVERY_GOOGLE_CLIENT_ID }}
+            -X github.com/breez/breez-mobile-recovery/core.GoogleClientSecret=${{ secrets.RECOVERY_GOOGLE_CLIENT_SECRET }}
         run: |
           ext=""; [[ "${{ runner.os }}" == "Windows" ]] && ext=".exe"
           go build -ldflags "$LDFLAGS" -o "ui/build/bin/recovery-cli$ext" .

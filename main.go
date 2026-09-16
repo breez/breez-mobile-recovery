@@ -26,7 +26,7 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/breez/breez-recovery/core"
+	"github.com/breez/breez-mobile-recovery/core"
 )
 
 var (

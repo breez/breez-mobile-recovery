@@ -1,7 +1,7 @@
 // Builds against the breez library (github.com/breez/breez). Go does not
 // propagate replace directives, so the ones below mirror the library's
 // go.mod and must be kept in sync with it when the library is bumped.
-module github.com/breez/breez-recovery
+module github.com/breez/breez-mobile-recovery
 
 go 1.25.0
 
