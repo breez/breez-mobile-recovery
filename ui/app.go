@@ -60,12 +60,14 @@ func (a *App) beforeClose(ctx context.Context) bool {
 		answer, err := wruntime.MessageDialog(ctx, wruntime.MessageDialogOptions{
 			Type:          wruntime.QuestionDialog,
 			Title:         "Close Breez Recovery?",
-			Message:       "The app is still working. Closing stops the node; you can reopen the app later and it continues where it left off.",
-			Buttons:       []string{"Keep running", "Close"},
-			DefaultButton: "Keep running",
-			CancelButton:  "Keep running",
+			Message:       "The app is still working. Closing stops the node; you can reopen the app later and it continues where it left off.\n\nClose it anyway?",
+			Buttons:       []string{"No", "Yes"},
+			DefaultButton: "No",
+			CancelButton:  "No",
 		})
-		if err != nil || answer != "Close" {
+		// Linux maps a question dialog to its own Yes/No buttons whatever
+		// labels are passed, so accept either spelling of a confirmation.
+		if err != nil || (answer != "Yes" && answer != "Close" && answer != "Ok") {
 			return true
 		}
 	} else {
