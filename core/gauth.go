@@ -151,17 +151,29 @@ func (c *Core) loopbackSignIn(ctx context.Context, cfg *oauth2.Config) (*oauth2.
 	srv := &http.Server{Handler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		q := r.URL.Query()
 		if q.Get("state") != state {
-			http.Error(w, "state mismatch", http.StatusBadRequest)
-			errCh <- errors.New("oauth state mismatch")
+			// Not our redirect (a stray request, a favicon fetch, or
+			// something else poking at the port): ignore it and keep
+			// waiting for the real one.
+			http.NotFound(w, r)
 			return
 		}
 		if e := q.Get("error"); e != "" {
-			http.Error(w, e, http.StatusBadRequest)
+			http.Redirect(w, r, SignedInPageURL, http.StatusFound)
 			errCh <- fmt.Errorf("google sign-in denied: %s", e)
 			return
 		}
-		fmt.Fprint(w, signedInPage)
-		codeCh <- q.Get("code")
+		code := q.Get("code")
+		if code == "" {
+			http.NotFound(w, r)
+			return
+		}
+		// Send the browser on to the hosted page so the code leaves the
+		// address bar, then hand the code over.
+		http.Redirect(w, r, SignedInPageURL, http.StatusFound)
+		select {
+		case codeCh <- code:
+		default:
+		}
 	})}
 	go srv.Serve(ln)
 	defer srv.Close()
@@ -191,10 +203,11 @@ func (c *Core) loopbackSignIn(ctx context.Context, cfg *oauth2.Config) (*oauth2.
 	return tok, nil
 }
 
-const signedInPage = `<!doctype html><html><head><meta charset="utf-8"><title>Breez Recovery</title></head>
-<body style="font-family:-apple-system,Segoe UI,Roboto,sans-serif;background:#f4f7fb;color:#0c1e3c;display:flex;align-items:center;justify-content:center;height:100vh;margin:0">
-<div style="background:#fff;padding:40px 48px;border-radius:16px;box-shadow:0 8px 30px rgba(12,30,60,.08);text-align:center">
-<h2 style="margin:0 0 8px">Signed in</h2><p style="margin:0;color:#5b6b85">You can close this tab and return to Breez Recovery.</p></div></body></html>`
+// SignedInPageURL is where the browser is sent once a sign-in redirect has
+// been received on localhost, so the user sees a normal page rather than a
+// 127.0.0.1 address carrying the authorization code or session token.
+// It is docs/signed-in.html in this repository, served by GitHub Pages.
+const SignedInPageURL = "https://breez.github.io/breez-mobile-recovery/signed-in.html"
 
 func randomString(n int) string {
 	b := make([]byte, n)

@@ -161,6 +161,34 @@ is not bundled; it is only needed for LSP features, not for closing
 channels or sweeping. Bake it in with
 `-X github.com/breez/breez-mobile-recovery/core.LSPToken=...` if wanted.
 
+## Security notes
+
+* The work folder holds the restored wallet, including its keys, plus the
+  cached Google refresh token (`gdrive-token.json`) and Apple session
+  (`icloud-session.json`). Files are created with owner-only permissions.
+  Delete the folder once the funds are out; "Forget cached sign-ins" in
+  Advanced settings removes just the sign-ins.
+* Sign-ins happen in the system browser on Google's and Apple's own pages.
+  The app never sees the account password. Google's redirect comes back to
+  a random localhost port, bound with PKCE and a one-time state; Apple's
+  comes back through the static callback page and a fixed localhost port.
+  Both listeners exist only while a sign-in is pending, and the browser is
+  sent on to `docs/signed-in.html` so no code or token stays in the
+  address bar.
+* Apple's session token travels through the callback page's URL, so the
+  GitHub Pages server sees it in its request log. Using the container's
+  custom URL scheme instead would avoid that; it needs an app bundle that
+  registers the scheme and a token created for it.
+* The Google client id and secret and the CloudKit API token are inside
+  the binary. Google does not treat desktop client secrets as confidential
+  and Apple's web token is meant for client-side use; both only identify
+  the app, never a user.
+* The embedded lnd listens on nothing: its RPC is in-memory and it makes
+  only outbound bitcoin peer connections.
+* The backup phrase is used in memory to derive the decryption key and is
+  never written to the log or to disk.
+* Releases ship a `SHA256SUMS` file. The macOS app is not signed yet.
+
 ## Notes
 
 * The tool depends on the breez library at a pinned commit. Go does not

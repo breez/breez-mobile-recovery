@@ -179,10 +179,16 @@ func (c *Core) icloudLoopback(ctx context.Context, signInURL string) (string, er
 
 	tokenCh := make(chan string, 1)
 	srv := &http.Server{Handler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/icloud" {
+			http.NotFound(w, r)
+			return
+		}
 		q := r.URL.Query()
 		for _, k := range []string{"ckSession", "ckWebAuthToken"} {
 			if v := q.Get(k); v != "" {
-				fmt.Fprint(w, signedInPage)
+				// Send the browser on to the hosted page so the token
+				// leaves the address bar, then hand the token over.
+				http.Redirect(w, r, SignedInPageURL, http.StatusFound)
 				select {
 				case tokenCh <- v:
 				default:

@@ -15,6 +15,13 @@ import (
 // Bitcoin DNS seeds instead of pinning the Breez btcd hosts, so the tool
 // keeps working after those hosts go away.
 func (c *Core) writeConfigs() error {
+	// Everything below is interpolated into ini files; a value with a line
+	// break or spaces could inject settings, so refuse those.
+	for name, v := range map[string]string{"peers": c.cfg.Peers, "lsp token": c.cfg.LSPToken, "breez server": c.cfg.BreezServer, "bootstrap url": c.cfg.BootstrapURL, "closed channels url": c.cfg.ClosedChannelsURL, "fee url": c.cfg.FeeURL, "network": c.cfg.Network} {
+		if strings.ContainsAny(v, "\r\n\t []") {
+			return fmt.Errorf("invalid %s: must not contain spaces, brackets or line breaks", name)
+		}
+	}
 	if err := os.MkdirAll(c.cfg.WorkDir, 0700); err != nil {
 		return err
 	}

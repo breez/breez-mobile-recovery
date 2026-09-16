@@ -112,6 +112,9 @@ jobs:
         with:
           path: dist
           merge-multiple: true
+      - name: Checksums
+        working-directory: dist
+        run: sha256sum * > SHA256SUMS
       - uses: softprops/action-gh-release@v2
         with:
           files: dist/*
@@ -121,3 +124,4 @@ jobs:
             Experimental. Desktop app that restores a Breez app backup and moves the funds to a bitcoin address.
             Linux: needs libwebkit2gtk-4.1 and GTK 3 (Ubuntu 22.04 or later, Fedora 37 or later).
             macOS: the app is not notarized yet. After unzipping, right-click the app and choose Open, or run `xattr -dr com.apple.quarantine "Breez Recovery.app"`.
+            Verify a download with `sha256sum -c SHA256SUMS`.
