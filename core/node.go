@@ -1,0 +1,343 @@
+package core
+
+import (
+	"context"
+	"errors"
+	"fmt"
+	"strconv"
+	"strings"
+	"sync"
+	"time"
+
+	"github.com/breez/breez/bindings"
+	"github.com/breez/breez/config"
+	"github.com/breez/breez/data"
+	"github.com/breez/breez/lnnode"
+	"github.com/btcsuite/btcd/chaincfg/chainhash"
+	"github.com/lightningnetwork/lnd/lnrpc"
+	"google.golang.org/grpc"
+	"google.golang.org/protobuf/proto"
+)
+
+// services implements bindings.AppServices. Notifications are fanned out to
+// waiters; backup sign-in is delegated to Google when a provider is in use.
+type services struct {
+	providerName string
+	auth         *googleAuth
+
+	mu      sync.Mutex
+	ready   chan struct{}
+	isReady bool
+	failed  chan error
+}
+
+func newServices(providerName string, auth *googleAuth) *services {
+	return &services{
+		providerName: providerName,
+		auth:         auth,
+		ready:        make(chan struct{}),
+		failed:       make(chan error, 1),
+	}
+}
+
+func (s *services) BackupProviderName() string { return s.providerName }
+
+func (s *services) BackupProviderSignIn() (string, error) {
+	if s.auth == nil {
+		return "", errors.New("no backup provider configured")
+	}
+	return s.auth.SignIn()
+}
+
+func (s *services) fail(msg string) {
+	select {
+	case s.failed <- errors.New(msg):
+	default:
+	}
+}
+
+func (s *services) Notify(payload []byte) {
+	var ev data.NotificationEvent
+	if err := proto.Unmarshal(payload, &ev); err != nil {
+		return
+	}
+	nodeLog("[notification] " + ev.Type.String())
+	switch ev.Type {
+	case data.NotificationEvent_READY:
+		s.mu.Lock()
+		if !s.isReady {
+			s.isReady = true
+			close(s.ready)
+		}
+		s.mu.Unlock()
+	case data.NotificationEvent_INITIALIZATION_FAILED:
+		s.fail("node initialization failed, see the log")
+	case data.NotificationEvent_LIGHTNING_SERVICE_DOWN:
+		s.fail("the node shut down, see the log")
+	case data.NotificationEvent_BACKUP_NODE_CONFLICT:
+		s.fail("another device restored this backup after us; the node stopped itself to avoid a penalty. Restore again from the latest backup")
+	case data.NotificationEvent_BACKUP_NOT_LATEST_CONFLICT:
+		s.fail("a newer backup exists in the cloud; the node stopped itself. Restore again from the latest backup")
+	}
+}
+
+func nodeLog(line string) {
+	logSinkMu.Lock()
+	s := logSink
+	logSinkMu.Unlock()
+	if s != nil {
+		s(line)
+	}
+}
+
+// node is a running embedded lnd with a direct gRPC client to it.
+type node struct {
+	svc    *services
+	conn   *grpc.ClientConn
+	client lnrpc.LightningClient
+}
+
+// startNode starts lnd, blocks until the RPC is ready and connects to it.
+func startNode(ctx context.Context, cfg Config, svc *services) (*node, error) {
+	torCfg, _ := proto.Marshal(&data.TorConfig{})
+	if err := bindings.Start(torCfg); err != nil {
+		return nil, fmt.Errorf("start node: %w", err)
+	}
+	select {
+	case <-svc.ready:
+	case err := <-svc.failed:
+		return nil, err
+	case <-time.After(5 * time.Minute):
+		return nil, errors.New("timed out waiting for the node to become ready")
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	}
+
+	libCfg, err := config.GetConfig(cfg.WorkDir)
+	if err != nil {
+		return nil, err
+	}
+	conn, err := lnnode.NewClientConnection(libCfg)
+	if err != nil {
+		return nil, fmt.Errorf("connect to node: %w", err)
+	}
+	return &node{svc: svc, conn: conn, client: lnrpc.NewLightningClient(conn)}, nil
+}
+
+func (n *node) close() {
+	if n.conn != nil {
+		n.conn.Close()
+	}
+}
+
+func (n *node) info(ctx context.Context) (*lnrpc.GetInfoResponse, error) {
+	c, cancel := context.WithTimeout(ctx, 30*time.Second)
+	defer cancel()
+	return n.client.GetInfo(c, &lnrpc.GetInfoRequest{})
+}
+
+// estimatedTip guesses the current chain height from a known anchor, for
+// progress display only. lnd does not expose the target height while it
+// syncs.
+var tipAnchor = struct {
+	height uint32
+	at     time.Time
+}{967301, time.Date(2026, 9, 16, 16, 43, 0, 0, time.UTC)}
+
+func estimatedTip() uint32 {
+	elapsed := time.Since(tipAnchor.at)
+	if elapsed < 0 {
+		return tipAnchor.height
+	}
+	return tipAnchor.height + uint32(elapsed/(10*time.Minute))
+}
+
+// waitSynced polls GetInfo until lnd reports synced_to_chain, reporting
+// progress on every change.
+func (n *node) waitSynced(ctx context.Context, onProgress func(SyncProgress)) error {
+	var last SyncProgress
+	for {
+		info, err := n.info(ctx)
+		if err == nil {
+			p := syncProgress(info)
+			if p.Synced() {
+				onProgress(p)
+				return nil
+			}
+			if p.Height != last.Height || p.Stage != last.Stage || p.Peers != last.Peers {
+				onProgress(p)
+				last = p
+			}
+		} else {
+			nodeLog("[getinfo] " + err.Error())
+		}
+		select {
+		case err := <-n.svc.failed:
+			return err
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-time.After(3 * time.Second):
+		}
+	}
+}
+
+// Synced reports whether the progress describes a fully synced node.
+func (p SyncProgress) Synced() bool { return p.Stage == "synced" }
+
+func syncProgress(info *lnrpc.GetInfoResponse) SyncProgress {
+	target := estimatedTip()
+	if info.BlockHeight > target {
+		target = info.BlockHeight
+	}
+	p := SyncProgress{Height: info.BlockHeight, Target: target, Peers: info.NumPeers}
+	switch {
+	case info.SyncedToChain:
+		p.Stage, p.Percent = "synced", 100
+		p.Message = fmt.Sprintf("Synced to the chain at block %d", info.BlockHeight)
+	case info.NumPeers == 0 && info.BlockHeight == 0:
+		p.Stage, p.Percent = "headers", 0
+		p.Message = "Connecting to the bitcoin network..."
+	case info.BlockHeight+3 >= target:
+		p.Stage, p.Percent = "finishing", 99
+		p.Message = "Reached the chain tip, finishing the scan..."
+	default:
+		p.Stage = "scanning"
+		p.Percent = float64(info.BlockHeight) / float64(target) * 100
+		if p.Percent > 99 {
+			p.Percent = 99
+		}
+		p.Message = fmt.Sprintf("Scanning the chain for your funds, block %d of about %d", info.BlockHeight, target)
+	}
+	return p
+}
+
+// waitChannelsActive gives lnd a moment to reconnect to channel peers (the
+// LSP) so a cooperative close has a chance. Returns once every channel is
+// active or the timeout passes.
+func (n *node) waitChannelsActive(ctx context.Context, timeout time.Duration, progressf func(string, ...interface{})) {
+	deadline := time.Now().Add(timeout)
+	reported := false
+	for time.Now().Before(deadline) {
+		if info, err := n.info(ctx); err == nil {
+			if info.NumInactiveChannels == 0 {
+				return
+			}
+			if !reported {
+				progressf("Waiting for channel peers to come online (%d active, %d inactive)...", info.NumActiveChannels, info.NumInactiveChannels)
+				reported = true
+			}
+		}
+		select {
+		case <-ctx.Done():
+			return
+		case <-time.After(5 * time.Second):
+		}
+	}
+}
+
+func (n *node) walletBalance(ctx context.Context) (*lnrpc.WalletBalanceResponse, error) {
+	return n.client.WalletBalance(ctx, &lnrpc.WalletBalanceRequest{})
+}
+
+func (n *node) openChannels(ctx context.Context) ([]*lnrpc.Channel, error) {
+	res, err := n.client.ListChannels(ctx, &lnrpc.ListChannelsRequest{})
+	if err != nil {
+		return nil, err
+	}
+	return res.Channels, nil
+}
+
+func (n *node) pending(ctx context.Context) (*lnrpc.PendingChannelsResponse, error) {
+	return n.client.PendingChannels(ctx, &lnrpc.PendingChannelsRequest{})
+}
+
+// forceClose requests a unilateral close and returns the closing txid.
+func (n *node) forceClose(ctx context.Context, channelPoint string) (string, error) {
+	parts := strings.SplitN(channelPoint, ":", 2)
+	if len(parts) != 2 {
+		return "", fmt.Errorf("bad channel point %q", channelPoint)
+	}
+	index, err := strconv.ParseUint(parts[1], 10, 32)
+	if err != nil {
+		return "", err
+	}
+	c, cancel := context.WithTimeout(ctx, 60*time.Second)
+	defer cancel()
+	stream, err := n.client.CloseChannel(c, &lnrpc.CloseChannelRequest{
+		ChannelPoint: &lnrpc.ChannelPoint{
+			FundingTxid: &lnrpc.ChannelPoint_FundingTxidStr{FundingTxidStr: parts[0]},
+			OutputIndex: uint32(index),
+		},
+		Force: true,
+	})
+	if err != nil {
+		return "", err
+	}
+	update, err := stream.Recv()
+	if err != nil {
+		return "", err
+	}
+	if p := update.GetClosePending(); p != nil {
+		h, err := chainhash.NewHash(p.Txid)
+		if err != nil {
+			return "", err
+		}
+		return h.String(), nil
+	}
+	return "", errors.New("unexpected close update")
+}
+
+func (n *node) status(ctx context.Context) (*Status, error) {
+	info, err := n.info(ctx)
+	if err != nil {
+		return nil, err
+	}
+	st := &Status{
+		NodeID:      info.IdentityPubkey,
+		BlockHeight: info.BlockHeight,
+		Synced:      info.SyncedToChain,
+		Peers:       info.NumPeers,
+		Channels:    []Channel{},
+		Pending:     []PendingClose{},
+	}
+	wb, err := n.walletBalance(ctx)
+	if err != nil {
+		return nil, err
+	}
+	st.OnchainConfirmed = wb.ConfirmedBalance
+	st.OnchainUnconfirmed = wb.UnconfirmedBalance
+
+	chans, err := n.openChannels(ctx)
+	if err != nil {
+		return nil, err
+	}
+	for _, c := range chans {
+		st.Channels = append(st.Channels, Channel{
+			ChannelPoint:  c.ChannelPoint,
+			Peer:          c.RemotePubkey,
+			Capacity:      c.Capacity,
+			LocalBalance:  c.LocalBalance,
+			RemoteBalance: c.RemoteBalance,
+			Active:        c.Active,
+		})
+		st.InChannels += c.LocalBalance
+	}
+
+	pend, err := n.pending(ctx)
+	if err != nil {
+		return nil, err
+	}
+	for _, c := range pend.WaitingCloseChannels {
+		st.Pending = append(st.Pending, PendingClose{ChannelPoint: c.Channel.ChannelPoint, Kind: "waiting", Amount: c.LimboBalance})
+		st.InPending += c.LimboBalance
+	}
+	for _, c := range pend.PendingClosingChannels {
+		st.Pending = append(st.Pending, PendingClose{ChannelPoint: c.Channel.ChannelPoint, Kind: "cooperative", ClosingTxID: c.ClosingTxid, Amount: c.Channel.LocalBalance})
+		st.InPending += c.Channel.LocalBalance
+	}
+	for _, c := range pend.PendingForceClosingChannels {
+		st.Pending = append(st.Pending, PendingClose{ChannelPoint: c.Channel.ChannelPoint, Kind: "force", ClosingTxID: c.ClosingTxid, Amount: c.LimboBalance, BlocksToMature: c.BlocksTilMaturity})
+		st.InPending += c.LimboBalance
+	}
+	return st, nil
+}

@@ -1,0 +1,21 @@
+{
+  "$schema": "https://wails.io/schemas/config.v2.json",
+  "name": "breez-recovery",
+  "outputfilename": "breez-recovery",
+  "frontend:install": "",
+  "frontend:build": "",
+  "frontend:dev:watcher": "",
+  "frontend:dev:serverUrl": "auto",
+  "wailsjsdir": "./frontend",
+  "author": {
+    "name": "Breez",
+    "email": "contact@breez.technology"
+  },
+  "info": {
+    "companyName": "Breez",
+    "productName": "Breez Recovery",
+    "productVersion": "0.1.0",
+    "copyright": "Breez",
+    "comments": "Restores a Breez mobile wallet backup and moves the funds to a bitcoin address."
+  }
+}
