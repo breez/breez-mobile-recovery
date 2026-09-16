@@ -404,7 +404,7 @@
       });
       lists.appendChild(list);
     }
-    $("#wallet-node").textContent = "Node " + st.nodeId + ", block " + st.blockHeight.toLocaleString("en-US") + ", " + st.peers + " peers";
+    $("#wallet-node").textContent = "Node " + st.nodeId + ", block " + st.blockHeight.toLocaleString("en-US") + ", " + st.peers + " channel peer" + (st.peers === 1 ? "" : "s");
   }
 
   async function refreshStatus() {
