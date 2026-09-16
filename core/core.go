@@ -551,6 +551,8 @@ type Status struct {
 	Pending            []PendingClose `json:"pending"`
 	InChannels         int64          `json:"inChannels"`
 	InPending          int64          `json:"inPending"`
+	// Warnings lists parts of the status that could not be read.
+	Warnings []string `json:"warnings"`
 }
 
 // Status queries the running node.

@@ -194,9 +194,9 @@ func cmdRestore(ctx context.Context, c *core.Core, args []string) error {
 		if snaps, err = c.ICloudSnapshots(ctx); err != nil {
 			return err
 		}
-		snap, err := pick(snaps, *nodeID)
-		if err != nil {
-			return err
+		snap, perr := pick(snaps, *nodeID)
+		if perr != nil {
+			return perr
 		}
 		err = c.ICloudRestore(ctx, snap.NodeID, phraseFor(snap, *mnemonic), *force)
 	default:
@@ -204,9 +204,9 @@ func cmdRestore(ctx context.Context, c *core.Core, args []string) error {
 		if snaps, err = c.GoogleSnapshots(ctx); err != nil {
 			return err
 		}
-		snap, err := pick(snaps, *nodeID)
-		if err != nil {
-			return err
+		snap, perr := pick(snaps, *nodeID)
+		if perr != nil {
+			return perr
 		}
 		err = c.GoogleRestore(ctx, snap.NodeID, phraseFor(snap, *mnemonic), *force)
 	}
@@ -295,6 +295,9 @@ func printStatus(st *core.Status) {
 		case "force":
 			fmt.Fprintf(out, "  %s  force close %s, %d sat in limbo, %d blocks until spendable\n", p.ChannelPoint, p.ClosingTxID, p.Amount, p.BlocksToMature)
 		}
+	}
+	for _, w := range st.Warnings {
+		fmt.Fprintf(out, "Warning:         %s\n", w)
 	}
 	fmt.Fprintln(out)
 }

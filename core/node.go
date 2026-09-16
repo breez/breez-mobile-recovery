@@ -299,6 +299,7 @@ func (n *node) status(ctx context.Context) (*Status, error) {
 		Peers:       info.NumPeers,
 		Channels:    []Channel{},
 		Pending:     []PendingClose{},
+		Warnings:    []string{},
 	}
 	wb, err := n.walletBalance(ctx)
 	if err != nil {
@@ -325,7 +326,11 @@ func (n *node) status(ctx context.Context) (*Status, error) {
 
 	pend, err := n.pending(ctx)
 	if err != nil {
-		return nil, err
+		// Old nodes can carry a closed channel lnd no longer has an
+		// arbitrator for, which makes the whole RPC fail. Report it
+		// instead of hiding balances and open channels.
+		st.Warnings = append(st.Warnings, "pending channel closes could not be listed: "+err.Error())
+		return st, nil
 	}
 	for _, c := range pend.WaitingCloseChannels {
 		st.Pending = append(st.Pending, PendingClose{ChannelPoint: c.Channel.ChannelPoint, Kind: "waiting", Amount: c.LimboBalance})

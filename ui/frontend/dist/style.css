@@ -122,7 +122,13 @@ p { margin: 0 0 16px; }
 
 /* advanced */
 .advanced { margin-top: 24px; border-top: 1px solid var(--line); padding-top: 12px; }
-.advanced summary { cursor: pointer; color: var(--muted); font-weight: 600; }
+.advanced summary { cursor: pointer; color: var(--muted); font-weight: 600; list-style: none; display: flex; align-items: center; gap: 8px; }
+.advanced summary::-webkit-details-marker { display: none; }
+.advanced summary::before {
+  content: ""; width: 7px; height: 7px; border: solid currentColor; border-width: 0 2px 2px 0;
+  transform: rotate(-45deg); transition: transform .15s ease; margin: 0 4px 2px 2px;
+}
+.advanced[open] summary::before { transform: rotate(45deg); margin-bottom: 4px; }
 .advanced .field { margin-top: 14px; }
 
 /* fields */

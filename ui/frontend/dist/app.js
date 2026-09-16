@@ -371,6 +371,7 @@
 
     const lists = $("#wallet-lists");
     lists.innerHTML = "";
+    (st.warnings || []).forEach((w) => lists.appendChild(el("div", "notice notice-warn", w)));
     if (st.channels.length) {
       lists.appendChild(el("div", "list-title", "Channels"));
       const list = el("div", "list");

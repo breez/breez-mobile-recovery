@@ -16,7 +16,10 @@ import (
 //go:embed all:frontend/dist
 var assets embed.FS
 
-//go:embed build/appicon.png
+// windowicon.png is a 256px copy of appicon.png: X11 window managers
+// drop the icon property when it is handed the 1024px original.
+//
+//go:embed build/windowicon.png
 var icon []byte
 
 func main() {
