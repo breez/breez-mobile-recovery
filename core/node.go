@@ -98,7 +98,8 @@ var rescan struct {
 	sync.Mutex
 	start, height uint32
 	addresses     int
-	found         int // wallet transactions seen so far
+	found         int   // wallet transactions seen so far
+	throughTime   int64 // timestamp of the newest one
 }
 
 var (
@@ -214,15 +215,18 @@ func (n *node) trackTransactions(ctx context.Context) {
 		return
 	}
 	var through uint32
+	var throughTime int64
 	for _, tx := range res.Transactions {
 		if tx.BlockHeight > 0 && uint32(tx.BlockHeight) > through {
 			through = uint32(tx.BlockHeight)
+			throughTime = tx.TimeStamp
 		}
 	}
 	rescan.Lock()
 	rescan.found = len(res.Transactions)
 	if through > rescan.height {
 		rescan.height = through
+		rescan.throughTime = throughTime
 	}
 	rescan.Unlock()
 }
@@ -287,22 +291,23 @@ func syncProgress(info *lnrpc.GetInfoResponse) SyncProgress {
 		// them, so the highest block among them is a verified lower
 		// bound of how far it got.
 		rescan.Lock()
-		found := rescan.found
+		found, throughTime := rescan.found, rescan.throughTime
 		rescan.Unlock()
 		p.Height, p.Target = height, target
+		p.Found, p.ThroughTime = found, throughTime
 		switch {
 		case start == 0:
 			p.Percent = -1
-			p.Message = "Reached the chain tip. Checking the wallet's history block by block; this is the slow part of a first sync."
+			p.Message = "Reached the chain tip. Now checking every block for your channel and payment history; this is the slow part of a first sync."
 		case found == 0 || height <= start || target <= start:
 			p.Percent = -1
-			p.Message = fmt.Sprintf("Checking every block since block %d for the wallet's %d addresses. Progress shows once the first transaction is found.", start, addresses)
+			p.Message = fmt.Sprintf("Checking every block since block %d for your channel and payment history (%d addresses). The bar starts moving with the first transaction found.", start, addresses)
 		default:
 			p.Percent = float64(height-start) / float64(target-start) * 100
 			if p.Percent > 99 {
 				p.Percent = 99
 			}
-			p.Message = fmt.Sprintf("Checked the wallet's history at least through block %d of %d, %d transactions found so far. Progress moves each time a transaction is found.", height, target, found)
+			p.Message = fmt.Sprintf("Checked at least through block %d of %d. The bar moves each time a transaction is found.", height, target)
 		}
 	default:
 		p.Stage = "headers"

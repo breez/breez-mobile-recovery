@@ -180,10 +180,16 @@
           <div class="stage" data-stage="start"><span class="dot"></span>Starting the node</div>
           <div class="stage" data-stage="connecting"><span class="dot"></span>Connecting to the bitcoin network</div>
           <div class="stage" data-stage="headers"><span class="dot"></span>Catching up with the bitcoin chain</div>
-          <div class="stage" data-stage="rescan"><span class="dot"></span>Checking the wallet's history block by block</div>
+          <div class="stage" data-stage="rescan"><span class="dot"></span>Checking your channel and payment history</div>
           <div class="stage" data-stage="peers"><span class="dot"></span>Connecting to channel peers</div>
         </div>
         <p class="progress-line" id="sync-message"></p>
+        <div class="live hidden" id="sync-live">
+          <div><span class="muted">Elapsed</span><strong id="live-elapsed">0:00</strong></div>
+          <div><span class="muted">Transactions found</span><strong id="live-found">0</strong></div>
+          <div><span class="muted">History checked through</span><strong id="live-through">not yet</strong></div>
+          <div><span class="muted">Node activity</span><strong id="live-activity">waiting</strong></div>
+        </div>
         <div class="actions">
           <button class="btn btn-ghost" type="button" data-action="cancel">Stop</button>
         </div>

@@ -508,6 +508,10 @@ type SyncProgress struct {
 	Percent float64 `json:"percent"` // -1 while unknown
 	Peers   uint32  `json:"peers"`
 	Message string  `json:"message"`
+	// During the history check: transactions found so far and the time
+	// of the newest one, which is how far in time the check has got.
+	Found       int   `json:"found"`
+	ThroughTime int64 `json:"throughTime"`
 }
 
 // WaitSynced blocks until lnd reports synced_to_chain, calling onProgress

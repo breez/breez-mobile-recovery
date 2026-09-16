@@ -24,7 +24,8 @@
     sweepTarget: 6,
     lastTxid: "",
     recent: [],           // recent progress lines
-    rescanStart: 0,       // when the wallet history check began, for the elapsed display
+    rescanStart: 0,       // when the history check began, for the elapsed display
+    lastNodeLine: 0,      // when the node last logged anything, for the activity display
     logCount: 0,
     logOpen: false,
     busy: false,
@@ -301,11 +302,17 @@
 
   const stageOrder = ["start", "connecting", "headers", "rescan", "peers"];
   function elapsed() {
-    if (!ui.rescanStart) return "working";
-    const m = Math.floor((Date.now() - ui.rescanStart) / 60000);
-    return m < 1 ? "just started" : m + " min so far";
+    if (!ui.rescanStart) return "0:00";
+    const s = Math.floor((Date.now() - ui.rescanStart) / 1000);
+    const m = Math.floor(s / 60), h = Math.floor(m / 60);
+    return (h ? h + ":" + String(m % 60).padStart(2, "0") : String(m)) + ":" + String(s % 60).padStart(2, "0");
   }
-  setInterval(() => { if (ui.screen === "sync" && ui.rescanStart && $("#sync-fill").classList.contains("indeterminate")) $("#sync-percent").textContent = elapsed(); }, 15000);
+  function ago(ms) { const s = Math.round(ms / 1000); return s < 2 ? "just now" : s + " s ago"; }
+  setInterval(() => {
+    if (ui.screen !== "sync") return;
+    if (ui.rescanStart) $("#live-elapsed").textContent = elapsed();
+    if (ui.lastNodeLine) $("#live-activity").textContent = ago(Date.now() - ui.lastNodeLine);
+  }, 1000);
   function setStage(stage) {
     const idx = stageOrder.indexOf(stage);
     $$("#sync-stages .stage").forEach((s) => {
@@ -327,10 +334,16 @@
     const pct = unknown ? 0 : Math.max(0, Math.min(100, p.percent || 0));
     $("#sync-fill").style.width = unknown ? "100%" : pct + "%";
     $("#sync-fill").classList.toggle("indeterminate", unknown);
-    $("#sync-percent").textContent = unknown ? elapsed() : Math.floor(pct) + "%" + (ui.rescanStart ? ", " + elapsed() : "");
-    if (p.stage === "rescan") {
+    $("#sync-fill").classList.toggle("shimmer", !unknown && p.stage !== "synced");
+    $("#sync-percent").textContent = unknown ? "working" : Math.floor(pct) + "%";
+    const rescan = p.stage === "rescan";
+    $("#sync-live").classList.toggle("hidden", !rescan);
+    if (rescan) {
       if (!ui.rescanStart) ui.rescanStart = Date.now();
-      $("#sync-blocks").textContent = unknown ? "checking history since block " + (p.height || 0).toLocaleString("en-US") : "block " + p.height.toLocaleString("en-US") + " of " + p.target.toLocaleString("en-US");
+      $("#sync-blocks").textContent = unknown ? "since block " + (p.height || 0).toLocaleString("en-US") : "block " + p.height.toLocaleString("en-US") + " of " + p.target.toLocaleString("en-US");
+      $("#live-found").textContent = String(p.found || 0);
+      $("#live-through").textContent = p.throughTime ? new Date(p.throughTime * 1000).toLocaleDateString(undefined, { dateStyle: "medium" }) : "not yet";
+      $("#live-elapsed").textContent = elapsed();
     } else {
       ui.rescanStart = 0;
       $("#sync-blocks").textContent = p.height ? "block " + p.height.toLocaleString("en-US") + " of about " + p.target.toLocaleString("en-US") : "";
@@ -637,7 +650,7 @@
   // ---------------------------------------------------------------- boot
 
   function bindEvents() {
-    rt.EventsOn("log", (lines) => appendLog(Array.isArray(lines) ? lines : [String(lines)]));
+    rt.EventsOn("log", (lines) => { ui.lastNodeLine = Date.now(); appendLog(Array.isArray(lines) ? lines : [String(lines)]); });
     rt.EventsOn("progress", (msg) => pushRecent(String(msg)));
     rt.EventsOn("sync", onSync);
     rt.EventsOn("signin", (info) => {
