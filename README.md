@@ -98,7 +98,7 @@ Environment overrides, mainly for testing: `BREEZ_RECOVERY_WORKDIR`,
 
 ### Building the app
 
-Prerequisites: Go 1.23+, the [Wails](https://wails.io) CLI
+Prerequisites: Go 1.25, the [Wails](https://wails.io) CLI
 (`go install github.com/wailsapp/wails/v2/cmd/wails@v2.16.0`), and on Linux
 `libgtk-3-dev` plus `libwebkit2gtk-4.1-dev` (Ubuntu 24.04 and later) or
 `libwebkit2gtk-4.0-dev` (older). Windows needs the WebView2 runtime, which
