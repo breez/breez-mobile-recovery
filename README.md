@@ -1,5 +1,9 @@
 # Breez Recovery
 
+> **Experimental.** This tool is under development and has not been
+> tested on real funds yet. Try it with a backup you can afford to lose,
+> keep the log (Log, then Save log) and report problems in the issues.
+
 Desktop app and command line tool that restore a Breez app backup from
 Google Drive, iCloud or a backup file and move the funds to a bitcoin
 address. They exist so users can still recover funds after the Breez app
