@@ -63,6 +63,7 @@ Commands:
   status      Start the node, wait for chain sync and print balances and channels
   close       Cooperatively close all channels, sending funds to --address
   sweep       Send the whole on-chain wallet balance to --address
+  history     Closed channels, where their funds went, and all on-chain transactions
   lncli       Run an lncli command against the restored node (escape hatch)
 
 Global flags:
@@ -107,6 +108,8 @@ func main() {
 		err = cmdClose(ctx, c, args)
 	case "sweep":
 		err = cmdSweep(ctx, c, args)
+	case "history":
+		err = cmdHistory(ctx, c, args)
 	case "lncli":
 		err = cmdLncli(ctx, c, args)
 	case "help", "-h", "--help":
@@ -382,6 +385,44 @@ func cmdSweep(ctx context.Context, c *core.Core, args []string) error {
 		return err
 	}
 	fmt.Fprintf(out, "Broadcast %s\n", txid)
+	return nil
+}
+
+// ---- history --------------------------------------------------------------
+
+func cmdHistory(ctx context.Context, c *core.Core, args []string) error {
+	fs := flag.NewFlagSet("history", flag.ExitOnError)
+	fs.Parse(args)
+	if err := startAndSync(ctx, c); err != nil {
+		return err
+	}
+	h, err := c.History(ctx)
+	if err != nil {
+		return err
+	}
+	fmt.Fprintf(out, "\nClosed channels: %d\n", len(h.Channels))
+	for _, ch := range h.Channels {
+		fmt.Fprintf(out, "  %s\n    %s close at block %d, capacity %d sat, settled to us %d sat, closing tx %s\n", ch.ChannelPoint, ch.CloseType, ch.CloseHeight, ch.Capacity, ch.SettledBalance, ch.ClosingTxID)
+		for _, sw := range ch.Sweeps {
+			dest := "external address"
+			if sw.ToThisNode {
+				dest = "this node's wallet"
+			}
+			fmt.Fprintf(out, "    swept %d sat to %s (%s) in %s at block %d\n", sw.Amount, sw.Address, dest, sw.TxID, sw.Height)
+		}
+	}
+	fmt.Fprintf(out, "\nOn-chain transactions: %d\n", len(h.Transactions))
+	for _, tx := range h.Transactions {
+		fmt.Fprintf(out, "  %s  %+d sat  fee %d  block %d  %s\n", tx.TxID, tx.Amount, tx.Fee, tx.Height, time.Unix(tx.Time, 0).Local().Format("2006-01-02 15:04"))
+		for _, o := range tx.Outputs {
+			mark := ""
+			if o.Ours {
+				mark = "  (ours)"
+			}
+			fmt.Fprintf(out, "      %d sat -> %s%s\n", o.Amount, o.Address, mark)
+		}
+	}
+	fmt.Fprintln(out)
 	return nil
 }
 

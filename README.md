@@ -78,7 +78,11 @@ One window, one step at a time:
    too, and restarts itself once. The first sync of an old node takes a
    while: it scans the chain from the wallet's birthday.
 7. **Your funds.** Balances in channels, in pending closes and on-chain,
-   with the channel list and a hint about the next step.
+   with the channel list and a hint about the next step. **History** lists
+   every closed channel with how it closed, your share, the closing
+   transaction and each sweep with its destination address (marked when it
+   is this node's own wallet), plus every on-chain transaction of the node,
+   all linked to mempool.space.
 8. **Close channels and withdraw** to an address. Cooperative closes pay the
    address directly. Channels whose peer is offline are skipped and can be
    force closed (funds mature after the channel delay, up to ~720 blocks).
@@ -151,6 +155,7 @@ recovery status                                     # start node, sync, print ba
 recovery close --address bc1...                     # cooperative close of all channels
 recovery close --address bc1... --force             # force close channels whose peer is gone
 recovery sweep --address bc1...                     # send the on-chain balance out
+recovery history                                    # closed channels, sweeps and destinations, on-chain txs
 recovery lncli <command>                            # any lncli command against the node
 ```
 

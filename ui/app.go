@@ -445,6 +445,17 @@ func (a *App) GetStatus() (*core.Status, error) {
 	return st, err
 }
 
+// GetHistory lists closed channels, their sweeps and all on-chain transactions.
+func (a *App) GetHistory() (*core.History, error) {
+	var h *core.History
+	err := a.run("history", func(ctx context.Context) error {
+		var err error
+		h, err = a.c().History(ctx)
+		return err
+	})
+	return h, err
+}
+
 // ValidateAddress checks a bitcoin address.
 func (a *App) ValidateAddress(address string) error {
 	return core.ValidateAddress(strings.TrimSpace(address))

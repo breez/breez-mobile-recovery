@@ -451,6 +451,86 @@
     finally { setBusy(false); }
   }
 
+  // ---------------------------------------------------------------- history
+
+  function txLink(txid) {
+    const a = el("span", "link", "View");
+    a.addEventListener("click", () => api.OpenURL("https://mempool.space/tx/" + txid));
+    return a;
+  }
+  function addrLink(address) {
+    const a = el("span", "link", "View");
+    a.addEventListener("click", () => api.OpenURL("https://mempool.space/address/" + address));
+    return a;
+  }
+  function fmtTime(t) { return t ? new Date(t * 1000).toLocaleDateString(undefined, { dateStyle: "medium" }) : ""; }
+
+  async function openHistory() {
+    setBusy(true);
+    try {
+      const h = await api.GetHistory();
+      renderHistory(h);
+      show("history");
+    } catch (e) { showError(errMsg(e)); }
+    finally { setBusy(false); }
+  }
+
+  function renderHistory(h) {
+    const chans = $("#history-channels"), txs = $("#history-txs");
+    chans.innerHTML = ""; txs.innerHTML = "";
+    chans.appendChild(el("div", "list-title", "Closed channels" + (h.channels.length ? " (" + h.channels.length + ")" : "")));
+    if (!h.channels.length) chans.appendChild(el("p", "muted", "No closed channels."));
+    h.channels.forEach((c) => {
+      const box = el("div", "hist");
+      const head = el("div", "hist-head");
+      head.appendChild(el("span", "hist-title", c.closeType + " close" + (c.closeHeight ? " at block " + c.closeHeight.toLocaleString("en-US") : "")));
+      head.appendChild(el("span", "hist-sub", "capacity " + fmtSat(c.capacity) + (c.settledBalance ? ", your share paid by the close " + fmtSat(c.settledBalance) : "")));
+      box.appendChild(head);
+      const ch = el("div", "hist-row");
+      ch.appendChild(el("span", "mono", "channel " + c.channelPoint));
+      if (c.closingTxid) { const l = txLink(c.closingTxid); l.textContent = "Closing tx"; ch.appendChild(l); }
+      box.appendChild(ch);
+      if (!c.sweeps.length) {
+        const r = el("div", "hist-row");
+        r.appendChild(el("span", "muted", "No funds swept from this channel by this node."));
+        box.appendChild(r);
+      }
+      c.sweeps.forEach((s) => {
+        const r = el("div", "hist-row");
+        const left = el("div");
+        left.appendChild(el("div", null, fmtSat(s.amount) + " to " + (s.toThisNode ? "this node" : "an external address") + (s.time ? ", " + fmtTime(s.time) : "")));
+        left.appendChild(el("div", "mono", s.address));
+        r.appendChild(left);
+        r.appendChild(txLink(s.txid));
+        box.appendChild(r);
+      });
+      chans.appendChild(box);
+    });
+    txs.appendChild(el("div", "list-title", "On-chain transactions" + (h.transactions.length ? " (" + h.transactions.length + ")" : "")));
+    if (!h.transactions.length) txs.appendChild(el("p", "muted", "No on-chain transactions."));
+    h.transactions.forEach((t) => {
+      const box = el("div", "hist");
+      const head = el("div", "hist-head");
+      head.appendChild(el("span", "hist-title", (t.amount >= 0 ? "+" : "") + fmtSat(t.amount) + (t.fee ? ", fee " + fmtSat(t.fee) : "")));
+      head.appendChild(el("span", "hist-sub", (t.height ? "block " + t.height.toLocaleString("en-US") + ", " : "unconfirmed, ") + fmtTime(t.time)));
+      box.appendChild(head);
+      const idrow = el("div", "hist-row");
+      idrow.appendChild(el("span", "mono", t.txid));
+      idrow.appendChild(txLink(t.txid));
+      box.appendChild(idrow);
+      t.outputs.forEach((o) => {
+        const r = el("div", "hist-row");
+        const left = el("div");
+        left.appendChild(el("div", null, fmtSat(o.amount) + (o.ours ? " to this node" : " to an external address")));
+        left.appendChild(el("div", "mono", o.address));
+        r.appendChild(left);
+        r.appendChild(addrLink(o.address));
+        box.appendChild(r);
+      });
+      txs.appendChild(box);
+    });
+  }
+
   // ---------------------------------------------------------------- address validation
 
   function bindAddress(inputSel, hintSel) {
@@ -619,6 +699,7 @@
     "phrase-back": () => show(ui.source === "zip" ? "source" : "pick"),
     "phrase-continue": phraseContinue,
     "refresh": refreshStatus,
+    "go-history": openHistory,
     "go-withdraw": () => { $("#close-address-hint").textContent = ""; ui.closeAddress = ""; show("withdraw"); $("#close-address").focus(); },
     "go-sweep": () => { resetSweep(); $("#sweep-address-hint").textContent = ""; show("sweep"); $("#sweep-address").focus(); },
     "back-wallet": () => { renderWallet(); show("wallet"); },

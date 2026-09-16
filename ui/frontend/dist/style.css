@@ -275,3 +275,14 @@ input.invalid { border-color: var(--err); }
   line-height: 1.45; white-space: pre-wrap; word-break: break-all; color: var(--text);
 }
 .log-lines .tool { color: var(--primary); font-weight: 600; }
+
+/* history */
+.hist { border: 1px solid var(--line); border-radius: 12px; padding: 12px 14px; margin: 8px 0; }
+.hist-head { display: flex; justify-content: space-between; gap: 12px; align-items: baseline; flex-wrap: wrap; }
+.hist-title { font-weight: 600; }
+.hist-sub { color: var(--muted); font-size: 13px; }
+.hist-row { display: flex; justify-content: space-between; gap: 12px; align-items: center; padding: 6px 0; border-top: 1px solid var(--line); margin-top: 6px; flex-wrap: wrap; }
+.hist-row .mono { font-family: var(--mono); font-size: 12px; overflow-wrap: anywhere; }
+.hist-row .amt { font-family: var(--mono); font-weight: 600; white-space: nowrap; }
+.link { color: var(--primary); cursor: pointer; font-weight: 600; font-size: 13px; white-space: nowrap; }
+.link:hover { text-decoration: underline; }

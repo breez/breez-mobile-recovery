@@ -226,10 +226,27 @@
         <p class="lead" id="wallet-advice"></p>
         <div id="wallet-lists"></div>
         <div class="actions">
+          <button class="btn btn-ghost" type="button" data-action="go-history">History</button>
           <button class="btn btn-primary" type="button" data-action="go-withdraw" id="btn-withdraw">Close channels and withdraw</button>
           <button class="btn btn-primary" type="button" data-action="go-sweep" id="btn-sweep">Send on-chain balance</button>
         </div>
         <div class="muted small" id="wallet-node"></div>
+      </div>
+    </section>
+
+    <!-- 8b. History -->
+    <section class="screen" data-screen="history">
+      <div class="card card-wide">
+        <div class="card-head">
+          <h1>History</h1>
+          <button class="btn btn-secondary btn-sm" type="button" data-action="go-history">Refresh</button>
+        </div>
+        <p class="lead">Every channel that was closed, where its funds went, and every on-chain transaction of this node. Amounts marked "this node" landed in this node's own on-chain balance.</p>
+        <div id="history-channels"></div>
+        <div id="history-txs"></div>
+        <div class="actions">
+          <button class="btn btn-ghost" type="button" data-action="back-wallet">Back</button>
+        </div>
       </div>
     </section>
 
