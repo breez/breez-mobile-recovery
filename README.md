@@ -116,7 +116,9 @@ wails build -skipbindings \
 
 The binary lands in `ui/build/bin/`. The frontend is plain HTML,
 CSS and JavaScript under `ui/frontend/dist`, embedded in the binary; there
-is no npm step.
+is no npm step. `ui/frontend/mock/serve.sh` serves it with a mocked backend
+for UI work without a node. `CLAUDE.md` holds the working notes for anyone
+changing the tool, with or without Claude Code.
 
 ### Releases
 

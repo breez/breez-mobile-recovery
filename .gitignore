@@ -1,2 +1,3 @@
 ui/build/bin/
 ui/frontend/wailsjs/
+ui/frontend/mock/out/
