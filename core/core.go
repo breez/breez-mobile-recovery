@@ -497,8 +497,44 @@ func (c *Core) StartNode(ctx context.Context) error {
 	}
 	c.node = n
 	c.progressf("Node is up.")
-	return nil
+
+	// First start after a restore: derive the address look-ahead, then
+	// make the wallet check its history again from the start so the new
+	// addresses are covered. Marked so it happens once per restore.
+	marker := filepath.Join(c.cfg.WorkDir, addressesExtendedFile)
+	if _, err := os.Stat(marker); err == nil {
+		return nil
+	}
+	c.progressf("Preparing addresses to check, so funds received after the last backup are found too...")
+	if err := n.extendAddresses(ctx, c.progressf); err != nil {
+		return err
+	}
+	if err := os.WriteFile(marker, []byte(time.Now().Format(time.RFC3339)+"\n"), 0600); err != nil {
+		return err
+	}
+	if err := os.WriteFile(filepath.Join(c.cfg.WorkDir, forceRescanFile), nil, 0600); err != nil {
+		return err
+	}
+	// The library cannot be re-initialised in-process after a stop (it
+	// hangs), so the caller restarts the whole program.
+	c.progressf("Stopping the node; the app restarts to check the history with the new addresses...")
+	c.Stop()
+	return ErrRestartRequired
 }
+
+// ErrRestartRequired is returned by StartNode when the program must be
+// started again for the node to pick up a change (the address look-ahead
+// after a restore).
+var ErrRestartRequired = errors.New("restart required")
+
+const (
+	// addressesExtendedFile marks a work dir whose wallet had the address
+	// look-ahead derived.
+	addressesExtendedFile = "addresses-extended"
+	// forceRescanFile is the marker the breez library checks on Init: it
+	// drops the wallet's transaction store and rescans from the birthday.
+	forceRescanFile = "FORCE_RESCAN"
+)
 
 // SyncProgress is reported while the node catches up with the chain.
 type SyncProgress struct {

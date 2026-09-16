@@ -16,6 +16,7 @@ import (
 	"github.com/breez/breez/lnnode"
 	"github.com/btcsuite/btcd/chaincfg/chainhash"
 	"github.com/lightningnetwork/lnd/lnrpc"
+	"github.com/lightningnetwork/lnd/lnrpc/walletrpc"
 	"google.golang.org/grpc"
 	"google.golang.org/protobuf/proto"
 )
@@ -197,6 +198,39 @@ func startNode(ctx context.Context, cfg Config, svc *services) (*node, error) {
 		return nil, fmt.Errorf("connect to node: %w", err)
 	}
 	return &node{svc: svc, conn: conn, client: lnrpc.NewLightningClient(conn)}, nil
+}
+
+// AddressLookahead is how many addresses are derived on each of the four
+// branches (witness key hash and taproot, external and change) after a
+// restore, so the history check also finds funds the phone received or
+// swept after its last backup. lnd's own seed recovery uses 2500.
+const AddressLookahead = 500
+
+// extendAddresses derives the look-ahead addresses. The wallet only scans
+// addresses it has derived, and a backup only knows the addresses in use
+// at backup time.
+func (n *node) extendAddresses(ctx context.Context, progressf func(string, ...interface{})) error {
+	wk := walletrpc.NewWalletKitClient(n.conn)
+	types := []walletrpc.AddressType{walletrpc.AddressType_WITNESS_PUBKEY_HASH, walletrpc.AddressType_TAPROOT_PUBKEY}
+	total := AddressLookahead * len(types) * 2
+	done := 0
+	for _, t := range types {
+		for _, change := range []bool{false, true} {
+			for i := 0; i < AddressLookahead; i++ {
+				c, cancel := context.WithTimeout(ctx, 30*time.Second)
+				_, err := wk.NextAddr(c, &walletrpc.AddrRequest{Type: t, Change: change})
+				cancel()
+				if err != nil {
+					return fmt.Errorf("derive address: %w", err)
+				}
+				done++
+				if done%200 == 0 {
+					progressf("Preparing addresses to check, %d of %d...", done, total)
+				}
+			}
+		}
+	}
+	return nil
 }
 
 func (n *node) close() {

@@ -30,8 +30,8 @@ docs/      GitHub Pages: signed-in.html, where the browser lands after a
 ## Build and run
 
 ```sh
-go build -o recovery-cli .                    # CLI
-cd ui && wails build -tags webkit2_41 -skipbindings -ldflags "-X main.version=dev"
+go build -tags walletrpc -o recovery-cli .    # CLI
+cd ui && wails build -tags webkit2_41,walletrpc -skipbindings -ldflags "-X main.version=dev"
 ```
 
 Wails CLI: `go install github.com/wailsapp/wails/v2/cmd/wails@v2.16.0`.
@@ -44,7 +44,9 @@ from repository secrets). `BREEZ_RECOVERY_WORKDIR` overrides the work
 folder, useful for testing next to a real one.
 
 `go test ./core` covers the phrase to key derivation and decryption.
-`go vet ./core . && go vet -tags webkit2_41 ./ui` before committing.
+`go vet -tags walletrpc ./core . && go vet -tags webkit2_41,walletrpc ./ui` before
+committing. The `walletrpc` tag compiles lnd's WalletKit RPC in; without
+it the address look-ahead after restore fails with an unimplemented RPC.
 
 ## UI work without a node
 
@@ -76,6 +78,17 @@ Every value is rendered with textContent; keep it that way.
   not work: "Rescanned through" lines (only every 10k blocks before the
   birthday), neutrino trace level (hex dumps of peer messages, and the
   per-block line never fired), GetRecoveryInfo (needs a recovery window).
+- A restored wallet only scans addresses it has already derived, and the
+  backup only knows the addresses in use at backup time. Funds the phone
+  received or swept after its last backup sit on later addresses and were
+  invisible (that is how Roy's 15,721 sat went missing on a second
+  restore). On the first start after a restore core derives 500 addresses
+  on each of four branches through WalletKit NextAddr (needs the
+  `walletrpc` build tag), writes FORCE_RESCAN and the `addresses-extended`
+  marker, stops the node and returns ErrRestartRequired; the app relaunches
+  itself with BREEZ_RECOVERY_AUTOCONTINUE=1 and the CLI asks to be run
+  again. Re-initialising the library in-process after a stop hangs, which
+  is why it is a program restart.
 - Rescan progress persists in wallet.db, a restart resumes where it was.
   A `FORCE_RESCAN` file in the work folder makes the library drop the
   transaction store and rescan from the birthday; handy for testing.

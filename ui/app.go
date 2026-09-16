@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"runtime"
 	"strings"
@@ -232,6 +233,7 @@ type State struct {
 	WorkDir          string `json:"workDir"`
 	Peers            string `json:"peers"`
 	HasNode          bool   `json:"hasNode"`
+	AutoContinue     bool   `json:"autoContinue"` // set after a self-restart: go straight to sync
 	LogPath          string `json:"logPath"`
 	GoogleConfigured bool   `json:"googleConfigured"`
 }
@@ -246,6 +248,7 @@ func (a *App) GetState() State {
 		WorkDir:          cfg.WorkDir,
 		Peers:            cfg.Peers,
 		HasNode:          c.HasRestoredNode(),
+		AutoContinue:     os.Getenv("BREEZ_RECOVERY_AUTOCONTINUE") == "1" && c.HasRestoredNode(),
 		LogPath:          c.LogPath(),
 		GoogleConfigured: cfg.GoogleClientID != "",
 	}
@@ -387,6 +390,10 @@ func (a *App) StartAndSync() (*core.Status, error) {
 	err := a.run("start node and sync", func(ctx context.Context) error {
 		c := a.c()
 		if err := c.StartNode(ctx); err != nil {
+			if errors.Is(err, core.ErrRestartRequired) {
+				a.relaunch()
+				return err
+			}
 			return err
 		}
 		err := c.WaitSynced(ctx, func(p core.SyncProgress) {
@@ -402,6 +409,27 @@ func (a *App) StartAndSync() (*core.Status, error) {
 		return err
 	})
 	return st, err
+}
+
+// relaunch starts a fresh copy of this program that continues the sync
+// on its own, then quits this one. Used when the node needs a restart.
+func (a *App) relaunch() {
+	exe, err := os.Executable()
+	if err != nil {
+		a.log.tool("relaunch: " + err.Error())
+		return
+	}
+	cmd := exec.Command(exe)
+	cmd.Env = append(os.Environ(), "BREEZ_RECOVERY_AUTOCONTINUE=1")
+	if err := cmd.Start(); err != nil {
+		a.log.tool("relaunch: " + err.Error())
+		return
+	}
+	a.log.tool("restarting the app")
+	go func() {
+		time.Sleep(500 * time.Millisecond)
+		wruntime.Quit(a.ctx)
+	}()
 }
 
 // GetStatus refreshes the wallet status of the running node.

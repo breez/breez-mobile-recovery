@@ -686,6 +686,14 @@
     if (existing && existing.length) appendLog(existing);
     await refreshState();
     show("welcome");
+    if (ui.state.autoContinue) {
+      // Relaunched by the app itself after preparing the node: give the
+      // previous copy a moment to release the work folder, then carry on.
+      pushRecent("Continuing after the restart...");
+      working("Restarting", false);
+      await new Promise((r) => setTimeout(r, 4000));
+      startSync();
+    }
   }
 
   boot();

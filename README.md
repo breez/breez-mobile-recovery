@@ -73,8 +73,10 @@ One window, one step at a time:
    but cannot be restored.
 5. **Backup phrase**, for encrypted backups, with word count and validation.
 6. **Restore**, then **sync** with a progress bar, block heights and stage
-   list. The first sync of an old node takes a while: it scans the chain
-   from the wallet's birthday.
+   list. On the first start after a restore the app derives 2000 extra
+   addresses, so funds the phone received after its last backup are found
+   too, and restarts itself once. The first sync of an old node takes a
+   while: it scans the chain from the wallet's birthday.
 7. **Your funds.** Balances in channels, in pending closes and on-chain,
    with the channel list and a hint about the next step.
 8. **Close channels and withdraw** to an address. Cooperative closes pay the
@@ -106,11 +108,11 @@ every updated Windows 10/11 has.
 
 ```sh
 cd ui
-wails build -skipbindings \
+wails build -skipbindings -tags walletrpc \
   -ldflags "-X main.version=1.0.0 \
             -X github.com/breez/breez-mobile-recovery/core.GoogleClientID=<id> \
             -X github.com/breez/breez-mobile-recovery/core.GoogleClientSecret=<secret>"
-# Linux with webkit2gtk 4.1: add -tags webkit2_41
+# Linux with webkit2gtk 4.1: -tags webkit2_41,walletrpc
 # other targets: -platform darwin/universal | windows/amd64 | linux/amd64
 ```
 
@@ -136,7 +138,7 @@ choose Open the first time, or run
 ## Command line tool
 
 ```sh
-go build -ldflags "-X github.com/breez/breez-mobile-recovery/core.GoogleClientID=<id> -X github.com/breez/breez-mobile-recovery/core.GoogleClientSecret=<secret>" .
+go build -tags walletrpc -ldflags "-X github.com/breez/breez-mobile-recovery/core.GoogleClientID=<id> -X github.com/breez/breez-mobile-recovery/core.GoogleClientSecret=<secret>" .
 ```
 
 ```
