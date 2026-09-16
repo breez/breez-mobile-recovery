@@ -18,6 +18,27 @@ ui/        the desktop app (Wails: Go + a small HTML frontend)
 main.go    the command line tool
 ```
 
+## Test plan
+
+A cell records the furthest step reached, who ran it and when. A run
+counts once a real backup went through the app on that OS. Steps:
+
+1. Sign in and list the backups
+2. Restore (with the backup phrase where the backup is encrypted)
+3. Sync to the chain tip and see the funds screen with the right balances
+4. Close channels cooperatively to an address
+5. Force close a channel whose peer is offline, wait for maturity
+6. Send the on-chain balance out
+
+| Backup source | Linux | macOS | Windows |
+|---|---|---|---|
+| Google Drive | in progress, roys, 2026-09-16 | not run | not run |
+| iCloud | not run | not run | not run |
+| Backup file | steps 2 and 3 on a fresh node with no funds, 2026-09-16 | not run | not run |
+
+Steps 4 to 6 have not been run on real funds anywhere yet. Update the
+table in the same pull request as any fix the run produced.
+
 ## How the Breez app backup works
 
 * The backup is a zip of three files: lnd's `wallet.db` and `channel.db`
