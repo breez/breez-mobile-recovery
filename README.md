@@ -32,12 +32,12 @@ counts once a real backup went through the app on that OS. Steps:
 
 | Backup source | Linux | macOS | Windows |
 |---|---|---|---|
-| Google Drive | steps 1 to 3, roys, 2026-09-16 (node from 2019, 938 addresses: history check took 90 min) | not run | not run |
+| Google Drive | steps 1 to 5, roys, 2026-09-17 (node from 2019, 938 addresses: first history check took 90 min) | not run | not run |
 | iCloud | not run | not run | not run |
 | Backup file | steps 2 and 3 on a fresh node with no funds, 2026-09-16 | not run | not run |
 
-Steps 4 to 6 have not been run on real funds anywhere yet. Update the
-table in the same pull request as any fix the run produced.
+Step 6 has not been run anywhere yet. Update the table in the same pull
+request as any fix the run produced.
 
 ## How the Breez app backup works
 
