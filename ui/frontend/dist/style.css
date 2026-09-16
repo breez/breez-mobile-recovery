@@ -247,7 +247,8 @@ input.invalid { border-color: var(--err); }
 
 /* summary and options */
 .summary { padding: 12px 14px; border-radius: 12px; background: var(--bg); margin: 8px 0 12px; }
-.summary div { display: flex; justify-content: space-between; }
+.summary div { display: flex; justify-content: space-between; gap: 16px; align-items: baseline; }
+.summary .mono { font-family: var(--mono); font-size: 13px; overflow-wrap: anywhere; text-align: right; }
 .options { display: grid; gap: 8px; }
 .option {
   display: flex; align-items: center; gap: 12px; padding: 10px 14px;

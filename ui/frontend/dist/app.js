@@ -130,9 +130,9 @@
     $("#workdir").value = ui.state.workDir;
     $("#peers").value = ui.state.peers || "";
     $("#log-path").textContent = ui.state.workDir;
-    $("#existing-node").classList.toggle("hidden", !ui.state.hasNode);
+    $("#welcome-existing").classList.toggle("hidden", !ui.state.hasNode);
+    $("#welcome-fresh").classList.toggle("hidden", ui.state.hasNode);
     $("#existing-node-path").textContent = ui.state.workDir;
-    $("#welcome-actions").classList.toggle("hidden", ui.state.hasNode);
   }
 
   async function applySettings() {

@@ -30,25 +30,28 @@
     <!-- 1. Welcome -->
     <section class="screen" data-screen="welcome">
       <div class="card card-wide">
-        <h1>Recover your Breez app</h1>
-        <p class="lead">This tool restores the backup the Breez app kept in your cloud account and moves the funds to a bitcoin address of your choice. It runs a copy of your Breez app node on this computer, so keep it open until the steps are done.</p>
-        <ol class="steps">
-          <li><strong>Find your backup</strong> in Google Drive, iCloud or a backup file.</li>
-          <li><strong>Sync</strong> the restored app with the bitcoin network. First time takes a while.</li>
-          <li><strong>Move the funds</strong> by closing your channels to an address you control.</li>
-        </ol>
-        <div id="existing-node" class="notice hidden">
-          <div>
-            <strong>A restored Breez app already exists on this computer.</strong>
-            <div class="muted" id="existing-node-path"></div>
-          </div>
-          <div class="row">
-            <button class="btn btn-primary" type="button" data-action="continue-existing">Continue with it</button>
-            <button class="btn btn-secondary" type="button" data-action="restore-other">Restore a different backup</button>
+        <div id="welcome-fresh">
+          <h1>Recover your Breez app</h1>
+          <p class="lead">This tool restores the backup the Breez app kept in your cloud account and moves the funds to a bitcoin address of your choice. It runs a copy of your Breez app node on this computer, so keep it open until the steps are done.</p>
+          <ol class="steps">
+            <li><strong>Find your backup</strong> in Google Drive, iCloud or a backup file.</li>
+            <li><strong>Sync</strong> the restored app with the bitcoin network. First time takes a while.</li>
+            <li><strong>Move the funds</strong> by closing your channels to an address you control.</li>
+          </ol>
+          <div class="actions">
+            <button class="btn btn-primary btn-lg" type="button" data-action="start">Get started</button>
           </div>
         </div>
-        <div class="actions" id="welcome-actions">
-          <button class="btn btn-primary btn-lg" type="button" data-action="start">Get started</button>
+        <div id="welcome-existing" class="hidden">
+          <h1>Continue your recovery</h1>
+          <p class="lead">A Breez app restored earlier is on this computer. Continue to sync it and move the funds, or start over with a different backup.</p>
+          <div class="summary">
+            <div><span class="muted">Restored app folder</span><span class="mono" id="existing-node-path"></span></div>
+          </div>
+          <div class="actions">
+            <button class="btn btn-ghost" type="button" data-action="restore-other">Start over with a different backup</button>
+            <button class="btn btn-primary btn-lg" type="button" data-action="continue-existing">Continue</button>
+          </div>
         </div>
         <details class="advanced">
           <summary>Advanced settings</summary>
