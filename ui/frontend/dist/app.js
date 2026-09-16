@@ -330,10 +330,10 @@
     $("#sync-percent").textContent = unknown ? elapsed() : Math.floor(pct) + "%";
     if (p.stage === "rescan") {
       if (!ui.rescanStart) ui.rescanStart = Date.now();
-      $("#sync-blocks").textContent = "checking history since block " + (p.height || 0).toLocaleString("en-US") + (p.peers ? ", " + p.peers + " peers" : "");
+      $("#sync-blocks").textContent = "checking history since block " + (p.height || 0).toLocaleString("en-US");
     } else {
       ui.rescanStart = 0;
-      $("#sync-blocks").textContent = p.height ? "block " + p.height.toLocaleString("en-US") + " of about " + p.target.toLocaleString("en-US") + (p.peers ? ", " + p.peers + " peers" : "") : "";
+      $("#sync-blocks").textContent = p.height ? "block " + p.height.toLocaleString("en-US") + " of about " + p.target.toLocaleString("en-US") : "";
     }
     $("#sync-message").textContent = p.message || "";
     setStage(p.stage === "synced" ? "peers" : p.stage);
