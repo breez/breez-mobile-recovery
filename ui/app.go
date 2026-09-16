@@ -426,9 +426,11 @@ func (a *App) relaunch() {
 		return
 	}
 	a.log.tool("restarting the app")
+	// A plain exit rather than a window close: the library may still be
+	// winding down and the new copy needs the work folder released.
 	go func() {
 		time.Sleep(500 * time.Millisecond)
-		wruntime.Quit(a.ctx)
+		os.Exit(0)
 	}()
 }
 

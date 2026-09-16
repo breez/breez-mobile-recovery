@@ -516,10 +516,29 @@ func (c *Core) StartNode(ctx context.Context) error {
 		return err
 	}
 	// The library cannot be re-initialised in-process after a stop (it
-	// hangs), so the caller restarts the whole program.
+	// hangs), so the caller restarts the whole program. Stop can hang too
+	// on some nodes after lnd itself is down, so give it a bounded wait;
+	// the program exit releases whatever is left.
 	c.progressf("Stopping the node; the app restarts to check the history with the new addresses...")
-	c.Stop()
+	if !c.StopWithin(20 * time.Second) {
+		c.progressf("The node did not stop cleanly; the program exits and starts again.")
+	}
 	return ErrRestartRequired
+}
+
+// StopWithin calls Stop and reports whether it finished within d.
+func (c *Core) StopWithin(d time.Duration) bool {
+	done := make(chan struct{})
+	go func() {
+		c.Stop()
+		close(done)
+	}()
+	select {
+	case <-done:
+		return true
+	case <-time.After(d):
+		return false
+	}
 }
 
 // ErrRestartRequired is returned by StartNode when the program must be
