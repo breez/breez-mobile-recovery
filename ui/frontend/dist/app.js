@@ -340,7 +340,7 @@
     $("#sync-live").classList.toggle("hidden", !rescan);
     if (rescan) {
       if (!ui.rescanStart) ui.rescanStart = Date.now();
-      $("#sync-blocks").textContent = unknown ? "since block " + (p.height || 0).toLocaleString("en-US") : "block " + p.height.toLocaleString("en-US") + " of " + p.target.toLocaleString("en-US");
+      $("#sync-blocks").textContent = unknown ? "" : "about block " + p.height.toLocaleString("en-US") + " of " + p.target.toLocaleString("en-US");
       $("#live-found").textContent = String(p.found || 0);
       $("#live-through").textContent = p.throughTime ? new Date(p.throughTime * 1000).toLocaleDateString(undefined, { dateStyle: "medium" }) : "not yet";
       $("#live-elapsed").textContent = elapsed();

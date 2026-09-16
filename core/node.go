@@ -100,6 +100,7 @@ var rescan struct {
 	addresses     int
 	found         int   // wallet transactions seen so far
 	throughTime   int64 // timestamp of the newest one
+	startTime     int64 // wallet synced-to timestamp when the check began
 }
 
 var (
@@ -246,7 +247,7 @@ func (n *node) waitSynced(ctx context.Context, onProgress func(SyncProgress)) er
 				onProgress(p)
 				return nil
 			}
-			if p.Height != last.Height || p.Stage != last.Stage || p.Peers != last.Peers {
+			if p.Height != last.Height || p.Stage != last.Stage || p.Peers != last.Peers || p.ThroughTime != last.ThroughTime {
 				onProgress(p)
 				last = p
 			}
@@ -284,31 +285,42 @@ func syncProgress(info *lnrpc.GetInfoResponse) SyncProgress {
 		// addresses. Progress comes from the log tracker.
 		p.Stage = "rescan"
 		rescan.Lock()
-		start, height, addresses := rescan.start, rescan.height, rescan.addresses
+		start, addresses := rescan.start, rescan.addresses
 		rescan.Unlock()
-		// lnd reports no per-block progress for this phase. The wallet's
-		// transactions are discovered in block order as the scan reaches
-		// them, so the highest block among them is a verified lower
-		// bound of how far it got.
+		// While the wallet is behind the chain, lnd's best_header_timestamp
+		// is the timestamp of the block the wallet has scanned through
+		// (BtcWallet.IsSynced returns Manager.SyncedTo().Timestamp), so
+		// progress is measured in time and moves with every block.
 		rescan.Lock()
-		found, throughTime := rescan.found, rescan.throughTime
-		rescan.Unlock()
-		p.Height, p.Target = height, target
-		p.Found, p.ThroughTime = found, throughTime
-		switch {
-		case start == 0:
-			p.Percent = -1
-			p.Message = "Reached the chain tip. Now checking every block for your channel and payment history; this is the slow part of a first sync."
-		case found == 0 || height <= start || target <= start:
-			p.Percent = -1
-			p.Message = fmt.Sprintf("Checking every block since block %d for your channel and payment history (%d addresses). The bar starts moving with the first transaction found.", start, addresses)
-		default:
-			p.Percent = float64(height-start) / float64(target-start) * 100
-			if p.Percent > 99 {
-				p.Percent = 99
-			}
-			p.Message = fmt.Sprintf("Checked at least through block %d of %d. The bar moves each time a transaction is found.", height, target)
+		if rescan.startTime == 0 && info.BestHeaderTimestamp > 0 {
+			rescan.startTime = info.BestHeaderTimestamp
 		}
+		found, startTime := rescan.found, rescan.startTime
+		rescan.Unlock()
+		now := time.Now().Unix()
+		through := info.BestHeaderTimestamp
+		p.Found, p.ThroughTime = found, through
+		p.Target = target
+		if through <= 0 || startTime <= 0 || now <= startTime {
+			p.Percent = -1
+			p.Height = start
+			p.Message = "Reached the chain tip. Now checking every block for your channel and payment history; this is the slow part of a first sync."
+			return p
+		}
+		p.Percent = float64(through-startTime) / float64(now-startTime) * 100
+		if p.Percent > 99 {
+			p.Percent = 99
+		}
+		// Block estimate from time: ten minutes per block on average.
+		p.Height = target - uint32((now-through)/600)
+		if p.Height < start {
+			p.Height = start
+		}
+		what := "Checking every block for your channel and payment history"
+		if addresses > 0 {
+			what += fmt.Sprintf(" (%d addresses)", addresses)
+		}
+		p.Message = fmt.Sprintf("%s. Reached %s.", what, time.Unix(through, 0).Format("2 Jan 2006"))
 	default:
 		p.Stage = "headers"
 		p.Percent = float64(info.BlockHeight) / float64(target) * 100
