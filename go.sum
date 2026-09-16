@@ -1034,6 +1034,8 @@ github.com/boombuler/barcode v1.0.0/go.mod h1:paBWMcWSl3LHKBqUq+rly7CNSldXjb2rDl
 github.com/boombuler/barcode v1.0.1/go.mod h1:paBWMcWSl3LHKBqUq+rly7CNSldXjb2rDl3JlRe0mD8=
 github.com/breez/boltz v0.0.0-20250411100539-2f9ac32f077f h1:SuBXOFpurDLLuHBDMN+ybQbQmac5ZbYA12Ci8lNK+pU=
 github.com/breez/boltz v0.0.0-20250411100539-2f9ac32f077f/go.mod h1:5zr9v5/ML2cEhKNRe6TBGgxdLLo+M+wzEBDJxwPwp0o=
+github.com/breez/breez v0.0.0-20260906202014-eade35430c1b h1:PhBqR27uogRcx9vq4LZKOUbZOAZUhHZMvLm1+h9i+Dg=
+github.com/breez/breez v0.0.0-20260906202014-eade35430c1b/go.mod h1:t0YEPSKi3waCZZlREASF6SCtuuZIhl6Tv8OILEQMV7M=
 github.com/breez/btcwallet v0.16.10-0.20241026173810-25a62401fb87 h1:Ruv/UQAIg1NwbeL5pj4SHszwEogcEfmiWVkfxqrhhFY=
 github.com/breez/btcwallet v0.16.10-0.20241026173810-25a62401fb87/go.mod h1:X2xDre+j1QphTRo54y2TikUzeSvreL1t1aMXrD8Kc5A=
 github.com/breez/btcwallet/walletdb v1.4.3-0.20241026173810-25a62401fb87 h1:7O2Hx81XPIGmlUwZUrNcKXJJoHkMY2fJI6/MXvC7QMw=

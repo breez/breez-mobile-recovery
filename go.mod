@@ -1,13 +1,12 @@
-// The recovery tool is its own module so its desktop dependencies (Wails)
-// do not touch the library's go.mod. It builds against the library in the
-// parent directory; the replace directives below mirror the parent's and
-// must be kept in sync with it.
-module github.com/breez/breez/recovery
+// Builds against the breez library (github.com/breez/breez). Go does not
+// propagate replace directives, so the ones below mirror the library's
+// go.mod and must be kept in sync with it when the library is bumped.
+module github.com/breez/breez-recovery
 
 go 1.25.0
 
 require (
-	github.com/breez/breez v0.0.0
+	github.com/breez/breez v0.0.0-20260906202014-eade35430c1b
 	github.com/btcsuite/btcd/chaincfg/chainhash v1.1.0
 	github.com/lightningnetwork/lnd v0.18.5-beta
 	github.com/wailsapp/wails/v2 v2.16.0
@@ -244,8 +243,6 @@ require (
 	modernc.org/token v1.1.0 // indirect
 	sigs.k8s.io/yaml v1.2.0 // indirect
 )
-
-replace github.com/breez/breez => ../
 
 replace google.golang.org/protobuf => github.com/lightninglabs/protobuf-go-hex-display v1.30.0-hex-display
 

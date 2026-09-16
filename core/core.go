@@ -44,9 +44,9 @@ var DefaultExtraPeers = []string{"bb2.breez.technology"}
 // own definition. The LSP token is only needed for LSP features, not for
 // closing channels or sweeping.
 //
-//	go build -ldflags "-X github.com/breez/breez/recovery/core.GoogleClientID=... \
-//	                   -X github.com/breez/breez/recovery/core.GoogleClientSecret=... \
-//	                   -X github.com/breez/breez/recovery/core.LSPToken=..."
+//	go build -ldflags "-X github.com/breez/breez-recovery/core.GoogleClientID=... \
+//	                   -X github.com/breez/breez-recovery/core.GoogleClientSecret=... \
+//	                   -X github.com/breez/breez-recovery/core.LSPToken=..."
 var (
 	GoogleClientID     = ""
 	GoogleClientSecret = ""

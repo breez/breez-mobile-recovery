@@ -9,10 +9,9 @@ Both reuse the breez library unchanged: the same restore code and the same
 lnd fork the mobile app runs. Builds for macOS, Windows and Linux.
 
 ```
-recovery/
-  core/      the recovery logic (cloud sign-in, restore, node, close, sweep)
-  ui/        the desktop app (Wails: Go + a small HTML frontend)
-  main.go    the command line tool
+core/      the recovery logic (cloud sign-in, restore, node, close, sweep)
+ui/        the desktop app (Wails: Go + a small HTML frontend)
+main.go    the command line tool
 ```
 
 ## How the Breez app backup works
@@ -31,7 +30,7 @@ recovery/
   `iCloud.technology.breez.client` container. The tool uses a CloudKit API
   token (Production environment) whose sign-in callback is the static page
   `https://breez.github.io/breez/icloud-callback.html` (branch `gh-pages`
-  of this repo). The page forwards Apple's session token to the tool on
+  of the breez library repo). The page forwards Apple's session token to the tool on
   `127.0.0.1:53821`.
 
 ## Desktop app
@@ -81,27 +80,27 @@ Prerequisites: Go 1.23+, the [Wails](https://wails.io) CLI
 every updated Windows 10/11 has.
 
 ```sh
-cd recovery/ui
+cd ui
 wails build -skipbindings \
   -ldflags "-X main.version=1.0.0 \
-            -X github.com/breez/breez/recovery/core.GoogleClientID=<id> \
-            -X github.com/breez/breez/recovery/core.GoogleClientSecret=<secret>"
+            -X github.com/breez/breez-recovery/core.GoogleClientID=<id> \
+            -X github.com/breez/breez-recovery/core.GoogleClientSecret=<secret>"
 # Linux with webkit2gtk 4.1: add -tags webkit2_41
 # other targets: -platform darwin/universal | windows/amd64 | linux/amd64
 ```
 
-The binary lands in `recovery/ui/build/bin/`. The frontend is plain HTML,
+The binary lands in `ui/build/bin/`. The frontend is plain HTML,
 CSS and JavaScript under `ui/frontend/dist`, embedded in the binary; there
 is no npm step.
 
 ### Releases
 
-The workflow `.github/workflows/recovery.yml` builds macOS (universal),
-Windows and Linux on every tag named `recovery-v*` and attaches the
+The workflow `.github/workflows/build.yml` builds macOS (universal),
+Windows and Linux on every tag named `v*` and attaches the
 archives to a GitHub release. It needs two repository secrets,
 `RECOVERY_GOOGLE_CLIENT_ID` and `RECOVERY_GOOGLE_CLIENT_SECRET`, the Desktop
 app OAuth client of the `breez-technology` project. It can also be run by
-hand from the Actions tab to get test builds as artifacts.
+hand from the Actions tab, and runs on every pull request, to get test builds as artifacts.
 
 The macOS app is not signed or notarized yet. Users must right-click and
 choose Open the first time, or run
@@ -110,8 +109,7 @@ choose Open the first time, or run
 ## Command line tool
 
 ```sh
-cd recovery
-go build -ldflags "-X github.com/breez/breez/recovery/core.GoogleClientID=<id> -X github.com/breez/breez/recovery/core.GoogleClientSecret=<secret>" .
+go build -ldflags "-X github.com/breez/breez-recovery/core.GoogleClientID=<id> -X github.com/breez/breez-recovery/core.GoogleClientSecret=<secret>" .
 ```
 
 ```
@@ -136,13 +134,13 @@ The defaults are the production values from the `breez.conf` and `lnd.conf`
 bundled in the released APK (`assets/flutter_assets/conf`). The LSP token
 is not bundled; it is only needed for LSP features, not for closing
 channels or sweeping. Bake it in with
-`-X github.com/breez/breez/recovery/core.LSPToken=...` if wanted.
+`-X github.com/breez/breez-recovery/core.LSPToken=...` if wanted.
 
 ## Notes
 
-* The recovery tool is its own Go module (`recovery/go.mod`) so its desktop
-  dependencies stay out of the library's `go.mod`. Its `replace` directives
-  mirror the parent module's and must be kept in sync.
+* The tool depends on the breez library at a pinned commit. Go does not
+  propagate `replace` directives, so `go.mod` repeats the library's and
+  they must be kept in sync when the library is bumped.
 * Restoring a snapshot marks it in the cloud as restored by this machine,
   exactly as a new phone would. A phone still running that node stops
   itself on its next start to avoid a penalty.
