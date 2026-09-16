@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"regexp"
 	"strconv"
 	"strings"
 	"sync"
@@ -88,6 +89,55 @@ func nodeLog(line string) {
 	if s != nil {
 		s(line)
 	}
+}
+
+// rescan tracks the wallet's address rescan, which lnd only reports in its
+// log. After the headers are in, this is the slow part of a first sync:
+// every block since the wallet's birthday is checked against its addresses.
+var rescan struct {
+	sync.Mutex
+	start, height uint32
+	addresses     int
+}
+
+var (
+	rescanStartRe   = regexp.MustCompile(`Started rescan from block \S+ \(height (\d+)\) for (\d+) addresses`)
+	rescanThroughRe = regexp.MustCompile(`Rescanned through block \S+ \(height (\d+)\)`)
+	rescanBlockRe   = regexp.MustCompile(`\[TRC\] BTCN: Rescan got block (\d+) `)
+)
+
+// trackRescan feeds a node log line to the rescan tracker. It returns true
+// for the per-block trace line, which is progress data rather than
+// something to show in the log.
+func trackRescan(line string) bool {
+	if m := rescanStartRe.FindStringSubmatch(line); m != nil {
+		h, _ := strconv.ParseUint(m[1], 10, 32)
+		n, _ := strconv.Atoi(m[2])
+		rescan.Lock()
+		rescan.start, rescan.height, rescan.addresses = uint32(h), uint32(h), n
+		rescan.Unlock()
+		return false
+	}
+	if m := rescanThroughRe.FindStringSubmatch(line); m != nil {
+		h, _ := strconv.ParseUint(m[1], 10, 32)
+		rescan.Lock()
+		rescan.height = uint32(h)
+		rescan.Unlock()
+		return false
+	}
+	if m := rescanBlockRe.FindStringSubmatch(line); m != nil {
+		h, _ := strconv.ParseUint(m[1], 10, 32)
+		rescan.Lock()
+		if rescan.start == 0 {
+			rescan.start = uint32(h)
+		}
+		if uint32(h) > rescan.height {
+			rescan.height = uint32(h)
+		}
+		rescan.Unlock()
+		return true
+	}
+	return strings.Contains(line, "[TRC]")
 }
 
 // node is a running embedded lnd with a direct gRPC client to it.
@@ -195,18 +245,32 @@ func syncProgress(info *lnrpc.GetInfoResponse) SyncProgress {
 		p.Stage, p.Percent = "synced", 100
 		p.Message = fmt.Sprintf("Synced to the chain at block %d", info.BlockHeight)
 	case info.NumPeers == 0 && info.BlockHeight == 0:
-		p.Stage, p.Percent = "headers", 0
+		p.Stage, p.Percent = "connecting", 0
 		p.Message = "Connecting to the bitcoin network..."
 	case info.BlockHeight+3 >= target:
-		p.Stage, p.Percent = "finishing", 99
-		p.Message = "Reached the chain tip, finishing the scan..."
+		// Headers are at the tip; lnd is now rescanning the wallet's
+		// addresses. Progress comes from the log tracker.
+		p.Stage = "rescan"
+		rescan.Lock()
+		start, height, addresses := rescan.start, rescan.height, rescan.addresses
+		rescan.Unlock()
+		// lnd reports no per-block progress for this phase, so the bar
+		// is indeterminate. Say what is happening and since when.
+		p.Percent = -1
+		p.Height, p.Target = height, target
+		switch {
+		case start == 0:
+			p.Message = "Reached the chain tip. Checking the wallet's history block by block; this is the slow part of a first sync and lnd gives no progress for it."
+		default:
+			p.Message = fmt.Sprintf("Checking every block since block %d for the wallet's %d addresses, up to block %d. lnd gives no progress for this step; with a good peer it takes 10 to 30 minutes for a wallet from 2019.", start, addresses, target)
+		}
 	default:
-		p.Stage = "scanning"
+		p.Stage = "headers"
 		p.Percent = float64(info.BlockHeight) / float64(target) * 100
 		if p.Percent > 99 {
 			p.Percent = 99
 		}
-		p.Message = fmt.Sprintf("Scanning the chain for your funds, block %d of about %d", info.BlockHeight, target)
+		p.Message = fmt.Sprintf("Catching up with the bitcoin chain, block %d of about %d", info.BlockHeight, target)
 	}
 	return p
 }

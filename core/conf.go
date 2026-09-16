@@ -17,7 +17,7 @@ import (
 func (c *Core) writeConfigs() error {
 	// Everything below is interpolated into ini files; a value with a line
 	// break or spaces could inject settings, so refuse those.
-	for name, v := range map[string]string{"peers": c.cfg.Peers, "lsp token": c.cfg.LSPToken, "breez server": c.cfg.BreezServer, "bootstrap url": c.cfg.BootstrapURL, "closed channels url": c.cfg.ClosedChannelsURL, "fee url": c.cfg.FeeURL, "network": c.cfg.Network} {
+	for name, v := range map[string]string{"peers": c.cfg.Peers, "lsp token": c.cfg.LSPToken, "breez server": c.cfg.BreezServer, "bootstrap url": c.cfg.BootstrapURL, "closed channels url": c.cfg.ClosedChannelsURL, "fee url": c.cfg.FeeURL, "network": c.cfg.Network, "log level": c.cfg.LogLevel} {
 		if strings.ContainsAny(v, "\r\n\t []") {
 			return fmt.Errorf("invalid %s: must not contain spaces, brackets or line breaks", name)
 		}
@@ -61,8 +61,12 @@ grpckeepalive=0
 %s[Job Options]
 %s`, c.cfg.Network, c.cfg.BreezServer, c.cfg.BootstrapURL, c.cfg.ClosedChannelsURL, lspTokenLine, jobPeer)
 
+	logLevel := c.cfg.LogLevel
+	if logLevel == "" {
+		logLevel = "info"
+	}
 	lnd := fmt.Sprintf(`[Application Options]
-debuglevel=info
+debuglevel=%s
 noseedbackup=1
 nolisten=1
 rpcmemlisten=1
@@ -84,7 +88,7 @@ routing.assumechanvalid=1
 [fee]
 fee.url=%s
 [Neutrino]
-%s`, c.cfg.Network, c.cfg.FeeURL, neutrinoConnect)
+%s`, logLevel, c.cfg.Network, c.cfg.FeeURL, neutrinoConnect)
 
 	if err := os.WriteFile(breezConf, []byte(breez), 0600); err != nil {
 		return err

@@ -24,6 +24,7 @@
     sweepTarget: 6,
     lastTxid: "",
     recent: [],           // recent progress lines
+    rescanStart: 0,       // when the wallet history check began, for the elapsed display
     logCount: 0,
     logOpen: false,
     busy: false,
@@ -298,7 +299,13 @@
     }
   }
 
-  const stageOrder = ["start", "headers", "scanning", "finishing", "peers"];
+  const stageOrder = ["start", "connecting", "headers", "rescan", "peers"];
+  function elapsed() {
+    if (!ui.rescanStart) return "working";
+    const m = Math.floor((Date.now() - ui.rescanStart) / 60000);
+    return m < 1 ? "just started" : m + " min so far";
+  }
+  setInterval(() => { if (ui.screen === "sync" && ui.rescanStart) $("#sync-percent").textContent = elapsed(); }, 15000);
   function setStage(stage) {
     const idx = stageOrder.indexOf(stage);
     $$("#sync-stages .stage").forEach((s) => {
@@ -316,11 +323,19 @@
   }
   function onSync(p) {
     if (ui.screen !== "sync") return;
-    const pct = Math.max(0, Math.min(100, p.percent || 0));
-    $("#sync-fill").style.width = pct + "%";
-    $("#sync-percent").textContent = Math.floor(pct) + "%";
-    $("#sync-blocks").textContent = p.height ? "block " + p.height.toLocaleString("en-US") + " of about " + p.target.toLocaleString("en-US") + (p.peers ? ", " + p.peers + " peers" : "") : "";
-    $("#sync-message").textContent = p.stage === "scanning" ? "" : (p.message || "");
+    const unknown = p.percent < 0;
+    const pct = unknown ? 0 : Math.max(0, Math.min(100, p.percent || 0));
+    $("#sync-fill").style.width = unknown ? "100%" : pct + "%";
+    $("#sync-fill").classList.toggle("indeterminate", unknown);
+    $("#sync-percent").textContent = unknown ? elapsed() : Math.floor(pct) + "%";
+    if (p.stage === "rescan") {
+      if (!ui.rescanStart) ui.rescanStart = Date.now();
+      $("#sync-blocks").textContent = "checking history since block " + (p.height || 0).toLocaleString("en-US") + (p.peers ? ", " + p.peers + " peers" : "");
+    } else {
+      ui.rescanStart = 0;
+      $("#sync-blocks").textContent = p.height ? "block " + p.height.toLocaleString("en-US") + " of about " + p.target.toLocaleString("en-US") + (p.peers ? ", " + p.peers + " peers" : "") : "";
+    }
+    $("#sync-message").textContent = p.message || "";
     setStage(p.stage === "synced" ? "peers" : p.stage);
   }
 

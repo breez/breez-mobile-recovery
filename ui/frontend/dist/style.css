@@ -183,6 +183,12 @@ input.invalid { border-color: var(--err); }
   height: 100%; width: 0; border-radius: 6px; transition: width .6s ease;
   background: linear-gradient(90deg, var(--primary), var(--primary-2));
 }
+.progress-fill.indeterminate {
+  background: repeating-linear-gradient(90deg, var(--primary) 0 24px, var(--primary-soft) 24px 48px);
+  background-size: 48px 100%; animation: slide 1.2s linear infinite;
+}
+@keyframes slide { to { background-position: 48px 0; } }
+@media (prefers-reduced-motion: reduce) { .progress-fill.indeterminate { animation: none; } }
 .progress-meta { display: flex; justify-content: space-between; margin-top: 6px; font-weight: 600; }
 .progress-line { color: var(--muted); font-size: 14px; min-height: 20px; margin: 8px 0 0; }
 .stages { display: grid; gap: 6px; margin: 6px 0 10px; }

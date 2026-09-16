@@ -65,8 +65,10 @@ type Config struct {
 	// Peers pins bitcoin peers with compact filters, comma separated. Empty
 	// means discovery through the DNS seeds, which keeps the tool working
 	// after the Breez hosts are gone.
-	Peers              string
-	LSPToken           string
+	Peers    string
+	LSPToken string
+	// LogLevel is lnd's debuglevel, "info" by default.
+	LogLevel           string
 	GoogleClientID     string
 	GoogleClientSecret string
 	ICloudAPIToken     string
@@ -84,6 +86,7 @@ func DefaultConfig() Config {
 		ClosedChannelsURL:  DefaultClosedChannelsURL,
 		FeeURL:             DefaultFeeURL,
 		LSPToken:           LSPToken,
+		LogLevel:           "info",
 		GoogleClientID:     firstNonEmpty(os.Getenv("BREEZ_GOOGLE_CLIENT_ID"), GoogleClientID),
 		GoogleClientSecret: firstNonEmpty(os.Getenv("BREEZ_GOOGLE_CLIENT_SECRET"), GoogleClientSecret),
 		ICloudAPIToken:     icloudAPIToken,
@@ -139,7 +142,12 @@ type Core struct {
 // the reporter, once per process.
 func New(cfg Config, rep Reporter) *Core {
 	c := &Core{cfg: cfg, rep: rep}
-	setNodeLogSink(rep.NodeLog)
+	setNodeLogSink(func(line string) {
+		if trackRescan(line) {
+			return // progress only, not worth a log line
+		}
+		rep.NodeLog(line)
+	})
 	return c
 }
 
@@ -494,10 +502,10 @@ func (c *Core) StartNode(ctx context.Context) error {
 
 // SyncProgress is reported while the node catches up with the chain.
 type SyncProgress struct {
-	Stage   string  `json:"stage"` // "headers", "scanning", "finishing", "synced"
+	Stage   string  `json:"stage"` // "connecting", "headers", "rescan", "synced"
 	Height  uint32  `json:"height"`
-	Target  uint32  `json:"target"` // estimated chain tip
-	Percent float64 `json:"percent"`
+	Target  uint32  `json:"target"`  // estimated chain tip
+	Percent float64 `json:"percent"` // -1 while unknown
 	Peers   uint32  `json:"peers"`
 	Message string  `json:"message"`
 }
