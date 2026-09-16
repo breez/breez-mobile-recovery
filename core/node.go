@@ -98,22 +98,43 @@ var rescan struct {
 	sync.Mutex
 	start, height uint32
 	addresses     int
-	found         int   // wallet transactions seen so far
-	throughTime   int64 // timestamp of the newest one
-	startTime     int64 // wallet synced-to timestamp when the check began
-	wallStart     int64 // wall clock when the check began
+	found         int    // wallet transactions seen so far
+	throughTime   int64  // timestamp of the newest one
+	startTime     int64  // wallet synced-to timestamp when the check began
+	wallStart     int64  // wall clock when the check began
+	tip           uint32 // chain tip once neutrino reports it caught up
 }
 
 var (
 	rescanStartRe   = regexp.MustCompile(`Started rescan from block \S+ \(height (\d+)\) for (\d+) addresses`)
 	rescanThroughRe = regexp.MustCompile(`Rescanned through block \S+ \(height (\d+)\)`)
 	rescanBlockRe   = regexp.MustCompile(`\[TRC\] BTCN: Rescan got block (\d+) `)
+	caughtUpRe      = regexp.MustCompile(`Fully caught up with cfheaders at height (\d+)`)
+	newBlockRe      = regexp.MustCompile(`NTFN: New block: height=(\d+)`)
 )
 
 // trackRescan feeds a node log line to the rescan tracker. It returns true
 // for the per-block trace line, which is progress data rather than
 // something to show in the log.
 func trackRescan(line string) bool {
+	if m := caughtUpRe.FindStringSubmatch(line); m != nil {
+		h, _ := strconv.ParseUint(m[1], 10, 32)
+		rescan.Lock()
+		if uint32(h) > rescan.tip {
+			rescan.tip = uint32(h)
+		}
+		rescan.Unlock()
+		return false
+	}
+	if m := newBlockRe.FindStringSubmatch(line); m != nil {
+		h, _ := strconv.ParseUint(m[1], 10, 32)
+		rescan.Lock()
+		if rescan.tip > 0 && uint32(h) > rescan.tip {
+			rescan.tip = uint32(h)
+		}
+		rescan.Unlock()
+		return false
+	}
 	if m := rescanStartRe.FindStringSubmatch(line); m != nil {
 		h, _ := strconv.ParseUint(m[1], 10, 32)
 		n, _ := strconv.Atoi(m[2])
@@ -240,7 +261,10 @@ func (n *node) waitSynced(ctx context.Context, onProgress func(SyncProgress)) er
 	for {
 		info, err := n.info(ctx)
 		if err == nil {
-			if !info.SyncedToChain && info.BlockHeight+3 >= estimatedTip() {
+			rescan.Lock()
+			headersDone := rescan.tip > 0
+			rescan.Unlock()
+			if !info.SyncedToChain && (headersDone || info.BlockHeight+3 >= estimatedTip()) {
 				n.trackTransactions(ctx)
 			}
 			p := syncProgress(info)
@@ -269,7 +293,16 @@ func (n *node) waitSynced(ctx context.Context, onProgress func(SyncProgress)) er
 func (p SyncProgress) Synced() bool { return p.Stage == "synced" }
 
 func syncProgress(info *lnrpc.GetInfoResponse) SyncProgress {
-	target := estimatedTip()
+	// The real tip is known once neutrino logs that it caught up with the
+	// filter headers; until then an estimate from the clock stands in.
+	rescan.Lock()
+	tip := rescan.tip
+	rescan.Unlock()
+	headersDone := tip > 0
+	target := tip
+	if target == 0 {
+		target = estimatedTip()
+	}
 	if info.BlockHeight > target {
 		target = info.BlockHeight
 	}
@@ -278,10 +311,10 @@ func syncProgress(info *lnrpc.GetInfoResponse) SyncProgress {
 	case info.SyncedToChain:
 		p.Stage, p.Percent = "synced", 100
 		p.Message = fmt.Sprintf("Synced to the chain at block %d", info.BlockHeight)
-	case info.NumPeers == 0 && info.BlockHeight == 0:
+	case info.NumPeers == 0 && info.BlockHeight == 0 && !headersDone:
 		p.Stage, p.Percent = "connecting", 0
 		p.Message = "Connecting to the bitcoin network..."
-	case info.BlockHeight+3 >= target:
+	case headersDone || info.BlockHeight+3 >= target:
 		// Headers are at the tip; lnd is now rescanning the wallet's
 		// addresses. Progress comes from the log tracker.
 		p.Stage = "rescan"
