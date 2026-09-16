@@ -34,6 +34,11 @@ const (
 	DefaultFeeURL = "https://nd1.breez.technology/fees/v1/btc-fee-estimates.json"
 )
 
+// DefaultExtraPeers are added to neutrino next to DNS seed discovery when
+// no peers are pinned. bb1 is already gone; bb2 is the remaining Breez
+// compact-filter node.
+var DefaultExtraPeers = []string{"bb2.breez.technology"}
+
 // Build-time values. The Google client is a "Desktop app" OAuth client of
 // the Breez Google Cloud project; its secret is not confidential by Google's
 // own definition. The LSP token is only needed for LSP features, not for

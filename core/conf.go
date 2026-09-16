@@ -23,6 +23,15 @@ func (c *Core) writeConfigs() error {
 
 	jobPeer := ""
 	neutrinoConnect := ""
+	if strings.TrimSpace(c.cfg.Peers) == "" {
+		// Discovery through the DNS seeds stays on, but the Breez node is
+		// added as a known good compact-filter peer while it exists: the
+		// public peers found through the seeds are often slow or drop
+		// the long filter queries a wallet rescan needs.
+		for _, p := range DefaultExtraPeers {
+			neutrinoConnect += "neutrino.addpeer=" + p + "\n"
+		}
+	}
 	for _, p := range strings.Split(c.cfg.Peers, ",") {
 		p = strings.TrimSpace(p)
 		if p == "" {
