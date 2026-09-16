@@ -635,6 +635,11 @@
     "close-log": () => toggleLog(false),
   };
 
+  document.addEventListener("contextmenu", (ev) => ev.preventDefault());
+  document.addEventListener("keydown", (ev) => {
+    // No page reload or history navigation: the page is the app's state.
+    if (ev.key === "F5" || ((ev.ctrlKey || ev.metaKey) && (ev.key === "r" || ev.key === "R")) || (ev.altKey && (ev.key === "ArrowLeft" || ev.key === "ArrowRight"))) ev.preventDefault();
+  });
   document.addEventListener("click", (ev) => {
     const btn = ev.target.closest("[data-action]");
     if (!btn) return;

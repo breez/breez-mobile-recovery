@@ -775,6 +775,9 @@ func (c *Core) Lncli(ctx context.Context, command string) (string, error) {
 	return bindings.SendCommand(command)
 }
 
+// NodeRunning reports whether the embedded node has been started.
+func (c *Core) NodeRunning() bool { return c.node != nil }
+
 // Stop shuts the node down if it is running.
 func (c *Core) Stop() {
 	if c.node != nil {

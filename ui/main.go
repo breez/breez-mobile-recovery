@@ -35,6 +35,9 @@ func main() {
 		OnStartup:        app.startup,
 		OnBeforeClose:    app.beforeClose,
 		Bind:             []interface{}{app},
+		// No browser context menu: reload or back would drop the page state
+		// while the node keeps running.
+		EnableDefaultContextMenu: false,
 		Mac: &mac.Options{
 			About: &mac.AboutInfo{
 				Title:   "Breez Recovery " + version,

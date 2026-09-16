@@ -48,10 +48,30 @@ func (a *App) startup(ctx context.Context) {
 }
 
 func (a *App) beforeClose(ctx context.Context) bool {
-	a.cancelCurrent()
 	a.coreMu.Lock()
 	c := a.core
 	a.coreMu.Unlock()
+	// Closing mid-way stops the node. Ask first while something runs, so
+	// a stray click on the window controls does not end a long sync.
+	if !a.opMu.TryLock() || c.NodeRunning() {
+		if a.opMu.TryLock() {
+			a.opMu.Unlock()
+		}
+		answer, err := wruntime.MessageDialog(ctx, wruntime.MessageDialogOptions{
+			Type:          wruntime.QuestionDialog,
+			Title:         "Close Breez Recovery?",
+			Message:       "The app is still working. Closing stops the node; you can reopen the app later and it continues where it left off.",
+			Buttons:       []string{"Keep running", "Close"},
+			DefaultButton: "Keep running",
+			CancelButton:  "Keep running",
+		})
+		if err != nil || answer != "Close" {
+			return true
+		}
+	} else {
+		a.opMu.Unlock()
+	}
+	a.cancelCurrent()
 	done := make(chan struct{})
 	go func() {
 		c.Stop()
