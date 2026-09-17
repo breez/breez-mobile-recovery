@@ -36,9 +36,9 @@ const (
 )
 
 // DefaultPeers are the bitcoin peers neutrino connects to when none are
-// configured. bb1 is already gone; bb2 is the remaining Breez node with
-// compact filters. The list is exclusive, see writeConfigs.
-var DefaultPeers = []string{"bb2.breez.technology"}
+// configured: the two Breez nodes with compact filters, as on the phone.
+// The list is exclusive, see writeConfigs.
+var DefaultPeers = []string{"bb1.breez.technology", "bb2.breez.technology"}
 
 // Build-time values. The Google client is a "Desktop app" OAuth client of
 // the Breez Google Cloud project; its secret is not confidential by Google's
