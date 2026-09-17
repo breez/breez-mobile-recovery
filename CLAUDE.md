@@ -100,9 +100,15 @@ Every value is rendered with textContent; keep it that way.
   list, MaxPeers 3) and IGNORES lnd.conf's `[Neutrino]` section: alphas
   up to 17 wrote `neutrino.addpeer` there, which did nothing, and runs
   only reached bb2 by luck through the DNS seeds. Since alpha.18 core
-  pins bb1 and bb2.breez.technology through the job options and checks
-  that one of them answers on 8333 before starting (fails loudly
-  otherwise).
+  pins bb1 and bb2.breez.technology through the job options and, before
+  starting, does a bitcoin version handshake with each (a TCP connect is
+  not enough: a hung node still accepts connections) and fails loudly
+  when none answers with compact filters. The library also queries each
+  job peer over HTTPS (`https://<peer>/rest/blockfilter/...`, "rest
+  peers") for fast filter fetches. State on 2026-09-17: bb2 healthy
+  (P2P + REST, cert to 2026-11-09); bb1 accepts TCP on 8333 but never
+  replies to a version message and its TLS certificate expired
+  2026-07-12, so it contributes nothing until ops fixes it.
 - Old nodes can make lnd's PendingChannels RPC fail ("unable to find
   arbitrator"). Status reports a warning instead of failing.
 - History (core/history.go) is a ledger with one entry per money

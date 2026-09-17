@@ -12,6 +12,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/btcsuite/btcd/wire"
 	"io"
 	"net"
 	"os"
@@ -856,26 +857,58 @@ func short(nodeID string) string {
 	return nodeID
 }
 
-// checkPeers makes sure at least one pinned bitcoin peer answers before the
-// node starts. Neutrino connects only to the pinned peers, so an
-// unreachable list would leave the sync waiting forever with no message.
+// checkPeers makes sure at least one pinned bitcoin peer completes a
+// bitcoin protocol handshake before the node starts. Neutrino connects
+// only to the pinned peers, so a dead list would leave the sync waiting
+// forever with no message. A TCP connect alone is not enough: a hung node
+// still accepts connections (bb1 did in 2026-09).
 func (c *Core) checkPeers(ctx context.Context) error {
-	peers := c.peers()
 	var reasons []string
-	for _, p := range peers {
-		host := p
-		if _, _, err := net.SplitHostPort(p); err != nil {
-			host = net.JoinHostPort(p, "8333")
+	ok := 0
+	for _, p := range c.peers() {
+		if err := bitcoinHandshake(ctx, p); err != nil {
+			reasons = append(reasons, p+": "+err.Error())
+			c.progressf("Bitcoin peer %s does not answer: %v", p, err)
+			continue
 		}
-		dctx, cancel := context.WithTimeout(ctx, 10*time.Second)
-		conn, err := (&net.Dialer{}).DialContext(dctx, "tcp", host)
-		cancel()
-		if err == nil {
-			conn.Close()
-			c.progressf("Bitcoin peer %s is reachable.", p)
+		ok++
+		c.progressf("Bitcoin peer %s answers.", p)
+	}
+	if ok > 0 {
+		return nil
+	}
+	return fmt.Errorf("none of the bitcoin peers answers (%s). Check the internet connection, or set other peers with compact filters in Advanced settings", strings.Join(reasons, "; "))
+}
+
+// bitcoinHandshake sends a version message and waits for the peer's.
+func bitcoinHandshake(ctx context.Context, peer string) error {
+	host := peer
+	if _, _, err := net.SplitHostPort(peer); err != nil {
+		host = net.JoinHostPort(peer, "8333")
+	}
+	dctx, cancel := context.WithTimeout(ctx, 10*time.Second)
+	defer cancel()
+	conn, err := (&net.Dialer{}).DialContext(dctx, "tcp", host)
+	if err != nil {
+		return err
+	}
+	defer conn.Close()
+	conn.SetDeadline(time.Now().Add(10 * time.Second))
+	me := wire.NewNetAddressIPPort(net.IPv4zero, 0, 0)
+	ver := wire.NewMsgVersion(me, me, uint64(time.Now().UnixNano()), 0)
+	if err := wire.WriteMessage(conn, ver, wire.ProtocolVersion, wire.MainNet); err != nil {
+		return fmt.Errorf("send version: %w", err)
+	}
+	for {
+		msg, _, err := wire.ReadMessage(conn, wire.ProtocolVersion, wire.MainNet)
+		if err != nil {
+			return fmt.Errorf("no version reply: %w", err)
+		}
+		if v, ok := msg.(*wire.MsgVersion); ok {
+			if !v.HasService(wire.SFNodeCF) {
+				return errors.New("does not serve compact filters")
+			}
 			return nil
 		}
-		reasons = append(reasons, p+": "+err.Error())
 	}
-	return fmt.Errorf("none of the bitcoin peers can be reached (%s). Check the internet connection, or set other peers with compact filters in Advanced settings", strings.Join(reasons, "; "))
 }
