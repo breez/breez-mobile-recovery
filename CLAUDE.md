@@ -205,6 +205,9 @@ Every value is rendered with textContent; keep it that way.
 ## Releases
 
 Tag `vX.Y.Z` (a dash suffix marks a pre-release) and push; the workflow
-builds the three platforms and attaches the archives plus SHA256SUMS. The
+builds the three platforms and attaches the archives plus SHA256SUMS.
+GitHub's upload API fails now and then with an HTML error page and leaves
+a release missing files (alpha.24 and alpha.25 both), so the upload action
+may fail and a retry step fills the gaps and decides the outcome. The
 macOS app is not signed; the release notes carry the right-click Open
 workaround until notarization is set up.

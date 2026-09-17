@@ -116,6 +116,10 @@ jobs:
         working-directory: dist
         run: sha256sum * > SHA256SUMS
       - uses: softprops/action-gh-release@v2
+        # Uploads fail now and then with an HTML error page from GitHub and
+        # leave a release with some of its files. The next step fills the
+        # gaps and is the one that decides whether the release is good.
+        continue-on-error: true
         with:
           files: dist/*
           name: Breez Recovery ${{ github.ref_name }}
@@ -125,3 +129,25 @@ jobs:
             Linux: needs libwebkit2gtk-4.1 and GTK 3 (Ubuntu 22.04 or later, Fedora 37 or later).
             macOS: the app is not notarized yet. After unzipping, right-click the app and choose Open, or run `xattr -dr com.apple.quarantine "Breez Recovery.app"`.
             Verify a download with `sha256sum -c SHA256SUMS`.
+
+      - name: Upload every asset, with retries
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          set -u
+          for attempt in 1 2 3 4 5; do
+            have=$(gh release view "$TAG" --json assets -q '.assets[].name' || true)
+            missing=""
+            for f in dist/*; do
+              name=$(basename "$f")
+              printf '%s\n' "$have" | grep -qxF "$name" || missing="$missing $f"
+            done
+            [ -z "$missing" ] && echo "all assets on the release" && exit 0
+            echo "attempt $attempt, uploading:$missing"
+            # shellcheck disable=SC2086
+            gh release upload "$TAG" $missing --clobber || true
+            sleep $((attempt * 15))
+          done
+          echo "::error::assets still missing from $TAG:$missing"
+          exit 1
