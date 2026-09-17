@@ -75,7 +75,7 @@
         { time: 1765000000, kind: "deposit", title: "Deposit", detail: "Into a channel.", amount: 60000, delta: 60000, fee: 0, status: "done", txid: "a1b2c3d4e5f60718293a4b5c6d7e8f9012345678901234567890abcdefabcdef" },
         { time: 1764000000, kind: "received", title: "Received", detail: "from Alice", amount: 4000, delta: 4000, fee: 0, status: "done" },
       ],
-      totals: { in: 92000, out: 76801, fees: 1734, expected: 13465, onchain: 0, inChannels: 0, inPending: 0, held: 0, unexplained: -13465 },
+      totals: { in: 92000, out: 76801, fees: 1734, expected: 13465, onchain: 13465, inChannels: 0, inPending: 0, held: 13465, uncollected: 0, unexplained: 0 },
       zeroCloses: 1,
       warnings: [],
     }),
