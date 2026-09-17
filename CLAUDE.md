@@ -115,6 +115,20 @@ Every value is rendered with textContent; keep it that way.
   2026-07-12, so it contributes nothing until ops fixes it.
 - Old nodes can make lnd's PendingChannels RPC fail ("unable to find
   arbitrator"). Status reports a warning instead of failing.
+- Restoring a DIFFERENT node over a work dir that already held one must
+  delete `data/chain/bitcoin/<net>/channel.backup` (guardRestore does):
+  lnd's SCB is encrypted with the seed of the node that wrote it, and with
+  a foreign one lnd aborts at startup ("unable to extract on disk
+  encrypted SCB: chacha20poly1305: message authentication failed"), which
+  takes the library down with it and then the process panics (2026-09-17,
+  Roy restoring his 2022 backup over the 2019 one).
+- The library cannot be started again in a process that stopped it: after
+  the address look-ahead it hangs, and after a restore it crashes (the
+  library's account service subscribes to invoices before lnd serves and
+  then reads a nil stream: breez/breez account/payments.go:1310, seen
+  2026-09-17 when Roy picked a second backup). Both paths therefore return
+  ErrRestartRequired and the app relaunches itself; the CLI restores and
+  exits, so it is not affected.
 - History (core/history.go) is a ledger with one entry per money
   movement. Sources: the app's own payment list (`bindings.GetPayments`,
   the same list Breez mobile showed, with descriptions), lnd's closed and

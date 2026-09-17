@@ -137,6 +137,12 @@ type Core struct {
 	icloud  *icloudClient
 	records map[string]ckRecord
 	sweep   *sweepPlan
+	// restored is set when this process ran a restore. The library's
+	// services are torn down by the restore and starting them again in
+	// the same process crashes (the account service subscribes to
+	// invoices before lnd serves and then reads a nil stream), so the
+	// node is started by a fresh process.
+	restored bool
 }
 
 // New creates a session. It also captures the library's stdout logging into
@@ -232,6 +238,15 @@ func (c *Core) guardRestore(force bool) error {
 		if err := os.Remove(filepath.Join(c.cfg.WorkDir, name)); err != nil && !os.IsNotExist(err) {
 			return err
 		}
+	}
+	// lnd's channel backup file is encrypted with the seed of the node
+	// that wrote it. Left from a previous restore of a different node, it
+	// makes lnd refuse to start ("unable to extract on disk encrypted
+	// SCB"). The restore brings the node's own channel state, so the file
+	// is not needed; lnd writes a new one.
+	scb := filepath.Join(c.cfg.WorkDir, "data", "chain", "bitcoin", c.cfg.Network, "channel.backup")
+	if err := os.Remove(scb); err != nil && !os.IsNotExist(err) {
+		return err
 	}
 	return nil
 }
@@ -360,6 +375,7 @@ func (c *Core) GoogleRestore(ctx context.Context, nodeID, mnemonic string, force
 		return fmt.Errorf("restore failed: %w (wrong backup phrase?)", err)
 	}
 	c.progressf("Backup restored into %s.", c.cfg.WorkDir)
+	c.restored = true
 	return nil
 }
 
@@ -429,6 +445,7 @@ func (c *Core) ICloudRestore(ctx context.Context, nodeID, mnemonic string, force
 		return err
 	}
 	c.progressf("Backup restored into %s.", c.cfg.WorkDir)
+	c.restored = true
 	return nil
 }
 
@@ -461,6 +478,7 @@ func (c *Core) ZipRestore(zipPath, mnemonic string, force bool) error {
 		return err
 	}
 	c.progressf("Backup restored into %s.", c.cfg.WorkDir)
+	c.restored = true
 	return nil
 }
 
@@ -495,6 +513,10 @@ func (c *Core) StartNode(ctx context.Context) error {
 	}
 	if !c.HasRestoredNode() {
 		return fmt.Errorf("no restored wallet in %s", c.cfg.WorkDir)
+	}
+	if c.restored {
+		c.progressf("Backup restored; the app restarts to open it...")
+		return ErrRestartRequired
 	}
 	svc := c.svc
 	if svc == nil {

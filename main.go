@@ -255,7 +255,7 @@ func promptPhrase() string {
 func startAndSync(ctx context.Context, c *core.Core) error {
 	if err := c.StartNode(ctx); err != nil {
 		if errors.Is(err, core.ErrRestartRequired) {
-			fmt.Fprintln(out, "The node was prepared to check the history with more addresses. Run the same command again to continue.")
+			fmt.Fprintln(out, "The node was prepared in this run. Run the same command again to continue.")
 			os.Exit(0) // not c.Stop(): it may hang, and the exit releases everything
 		}
 		return err
