@@ -193,6 +193,10 @@ Every value is rendered with textContent; keep it that way.
   date reached. A bar parked at 99% with a static label is a bug.
 - No noisy tiles (a node activity indicator was removed as annoying) and no
   scary notes on the way through the flow.
+- Short text. One plain sentence explains a screen; delete anything that
+  does not carry information. No hedges ("roughly", "about") and no made-up
+  ranges: "10 to 40 minutes" was wrong, a real run took 90. A label is
+  "Time left".
 - No em dashes in UI copy or docs.
 - The Log panel and Save log are the support channel: anything a user
   would need to report must be in there.
