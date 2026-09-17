@@ -503,14 +503,6 @@
     if (t.inPending) parts.push(fmtSat(t.inPending) + " in closing channels");
     if (parts.length > 1) totals.appendChild(el("div", "ledger-total-sub", parts.join(", ")));
     if (t.uncollected) row("Set aside by channel closes, not collected yet", fmtSat(t.uncollected));
-    if (t.unexplained === 0) {
-      totals.appendChild(el("div", "ledger-check ok", "Every sat is accounted for."));
-    } else {
-      row("Not accounted for", fmtSigned(t.unexplained), "ledger-total-strong");
-      totals.appendChild(el("div", "ledger-check warn", t.unexplained > 0
-        ? "Money the app received without recording it."
-        : "Money that left the app without being recorded, such as a fee taken by the channel provider."));
-    }
 
     (h.warnings || []).forEach((w) => warns.appendChild(el("div", "notice notice-warn", w)));
 

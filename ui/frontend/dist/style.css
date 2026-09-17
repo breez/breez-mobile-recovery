@@ -283,9 +283,6 @@ input.invalid { border-color: var(--err); }
 .ledger-total-strong { border-top: 1px solid var(--line); margin-top: 6px; padding-top: 8px; font-weight: 600; }
 .ledger-total-strong .mono { font-weight: 700; font-size: 16px; }
 .ledger-total-sub { color: var(--muted); font-size: 13px; text-align: right; }
-.ledger-check { margin-top: 10px; font-size: 13px; padding: 8px 10px; border-radius: 8px; }
-.ledger-check.ok { background: var(--ok-soft); color: var(--ok); }
-.ledger-check.warn { background: var(--warn-soft); color: var(--warn); }
 .ledger { display: grid; }
 .ledger-row { display: grid; grid-template-columns: 110px 1fr auto; gap: 4px 16px; padding: 12px 4px; border-top: 1px solid var(--line); align-items: start; }
 .ledger-row:first-child { border-top: 0; }

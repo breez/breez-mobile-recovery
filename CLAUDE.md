@@ -113,11 +113,11 @@ Every value is rendered with textContent; keep it that way.
   then nearest in time within 14 days; an unpaired output spent to an
   outside address is a refund. Entries carry Delta (net effect on the
   app's funds, 0 for moves between its own balances) and Fee; totals
-  compare In - Out - Fees with what the node holds now and say how much is
-  unexplained. On Roy's 2019 node (3,479 entries, 28M sat through) the
-  residual is a few tens of thousands of sats, from invoices with memos
-  lnd cannot serialise and events the app never recorded; the screen says
-  so instead of hiding it. `recovery history --json` also prints the raw
+  show In, Out, Fees, the list total and what the node holds now; the
+  Unexplained field stays in the JSON but the screen and the CLI do not
+  show it (Roy: no notes about a gap, even when there is one). On Roy's 2019 node (3,479 entries, 28M sat through) the
+  residual is 12,798 sat, from invoices with memos lnd cannot serialise
+  and events the app never recorded. `recovery history --json` also prints the raw
   app list and an lnd cross-check (`lnd` key) for chasing residuals.
   Close block times come from lnd's ChainKit RPC (`chainrpc` build tag).
 - X11 drops a 1024px window icon silently; Linux uses the 256px

@@ -463,11 +463,6 @@ func cmdHistory(ctx context.Context, c *core.Core, args []string) error {
 	if t.Uncollected != 0 {
 		fmt.Fprintf(out, "Set aside %14d sat  by channel closes, not collected into the on-chain balance yet\n", t.Uncollected)
 	}
-	if t.Unexplained != 0 {
-		fmt.Fprintf(out, "Difference %13d sat  not explained by the entries above\n", t.Unexplained)
-	} else {
-		fmt.Fprintln(out, "Every sat held now is explained by the entries above.")
-	}
 	fmt.Fprintln(out)
 	return nil
 }

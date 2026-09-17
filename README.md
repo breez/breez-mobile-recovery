@@ -82,9 +82,8 @@ One window, one step at a time:
    Lightning payments sent and received with their descriptions, deposits
    and withdrawals, channel closes and where their funds went, on-chain
    sends. Each entry shows the amount, the fee and a link to the
-   transaction. Totals at the top compare the list (received, sent, fees)
-   with what the app holds now, and show a "Not accounted for" line when
-   the two differ.
+   transaction. Totals at the top: received, sent, fees, the total of the
+   list, and what the app holds now.
 8. **Close channels and withdraw** to an address. Cooperative closes pay the
    address directly. Channels whose peer is offline are skipped and can be
    force closed (funds mature after the channel delay, up to ~720 blocks).
