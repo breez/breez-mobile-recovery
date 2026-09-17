@@ -241,9 +241,11 @@
           <h1>History</h1>
           <button class="btn btn-secondary btn-sm" type="button" data-action="go-history">Refresh</button>
         </div>
-        <p class="lead">Every channel that was closed, where its funds went, and every on-chain transaction of this node. Amounts marked "this node" landed in this node's own on-chain balance.</p>
-        <div id="history-channels"></div>
-        <div id="history-txs"></div>
+        <p class="lead">Everything that moved money in or out of this app, newest first. Moves between the app's channels and its on-chain balance are listed too, without a sign, because they only cost the fee.</p>
+        <div id="history-totals" class="ledger-totals"></div>
+        <div id="history-warnings"></div>
+        <div id="history-list" class="ledger"></div>
+        <p id="history-foot" class="muted small"></p>
         <div class="actions">
           <button class="btn btn-ghost" type="button" data-action="back-wallet">Back</button>
         </div>

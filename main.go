@@ -17,6 +17,7 @@ package main
 import (
 	"bufio"
 	"context"
+	"encoding/json"
 	"errors"
 	"flag"
 	"fmt"
@@ -63,7 +64,7 @@ Commands:
   status      Start the node, wait for chain sync and print balances and channels
   close       Cooperatively close all channels, sending funds to --address
   sweep       Send the whole on-chain wallet balance to --address
-  history     Closed channels, where their funds went, and all on-chain transactions
+  history     Every payment sent or received, channel closes and on-chain moves, with totals
   lncli       Run an lncli command against the restored node (escape hatch)
 
 Global flags:
@@ -392,6 +393,7 @@ func cmdSweep(ctx context.Context, c *core.Core, args []string) error {
 
 func cmdHistory(ctx context.Context, c *core.Core, args []string) error {
 	fs := flag.NewFlagSet("history", flag.ExitOnError)
+	asJSON := fs.Bool("json", false, "print the ledger and the app's raw payment list as JSON")
 	fs.Parse(args)
 	if err := startAndSync(ctx, c); err != nil {
 		return err
@@ -400,27 +402,71 @@ func cmdHistory(ctx context.Context, c *core.Core, args []string) error {
 	if err != nil {
 		return err
 	}
-	fmt.Fprintf(out, "\nClosed channels: %d\n", len(h.Channels))
-	for _, ch := range h.Channels {
-		fmt.Fprintf(out, "  %s\n    %s close at block %d, capacity %d sat, settled to us %d sat, closing tx %s\n", ch.ChannelPoint, ch.CloseType, ch.CloseHeight, ch.Capacity, ch.SettledBalance, ch.ClosingTxID)
-		for _, sw := range ch.Sweeps {
-			dest := "external address"
-			if sw.ToThisNode {
-				dest = "this node's wallet"
-			}
-			fmt.Fprintf(out, "    swept %d sat to %s (%s) in %s at block %d\n", sw.Amount, sw.Address, dest, sw.TxID, sw.Height)
+	if *asJSON {
+		payments, err := c.RawPayments()
+		if err != nil {
+			return err
+		}
+		lnd, err := c.LndTotals(ctx, payments)
+		if err != nil {
+			return err
+		}
+		enc := json.NewEncoder(out)
+		enc.SetIndent("", "  ")
+		return enc.Encode(map[string]interface{}{"history": h, "payments": payments, "lnd": lnd})
+	}
+	fmt.Fprintln(out)
+	for _, w := range h.Warnings {
+		fmt.Fprintf(out, "Warning: %s\n", w)
+	}
+	fmt.Fprintf(out, "%-17s %-24s %14s %10s  %s\n", "DATE", "WHAT", "AMOUNT", "FEE", "DETAILS")
+	for _, e := range h.Entries {
+		when := "unknown date"
+		if e.Time > 0 {
+			when = time.Unix(e.Time, 0).Local().Format("2006-01-02 15:04")
+		}
+		amount := fmt.Sprintf("%d sat", e.Amount)
+		switch {
+		case e.Delta > 0:
+			amount = "+" + amount
+		case e.Delta < 0:
+			amount = "-" + amount
+		}
+		fee := ""
+		if e.Fee > 0 {
+			fee = fmt.Sprintf("%d sat", e.Fee)
+		}
+		what := e.Title
+		if e.Status != "done" {
+			what += " (" + e.Status + ")"
+		}
+		fmt.Fprintf(out, "%-17s %-24s %14s %10s  %s\n", when, what, amount, fee, e.Detail)
+		if e.FeeNote != "" {
+			fmt.Fprintf(out, "%-17s %-24s %14s %10s  fee %s\n", "", "", "", "", e.FeeNote)
+		}
+		if e.Note != "" {
+			fmt.Fprintf(out, "%-17s %-24s %14s %10s  %s\n", "", "", "", "", e.Note)
+		}
+		if e.TxID != "" {
+			fmt.Fprintf(out, "%-17s %-24s %14s %10s  tx %s\n", "", "", "", "", e.TxID)
 		}
 	}
-	fmt.Fprintf(out, "\nOn-chain transactions: %d\n", len(h.Transactions))
-	for _, tx := range h.Transactions {
-		fmt.Fprintf(out, "  %s  %+d sat  fee %d  block %d  %s\n", tx.TxID, tx.Amount, tx.Fee, tx.Height, time.Unix(tx.Time, 0).Local().Format("2006-01-02 15:04"))
-		for _, o := range tx.Outputs {
-			mark := ""
-			if o.Ours {
-				mark = "  (ours)"
-			}
-			fmt.Fprintf(out, "      %d sat -> %s%s\n", o.Amount, o.Address, mark)
-		}
+	if h.ZeroCloses > 0 {
+		fmt.Fprintf(out, "\n%d channel(s) closed with no balance of yours are not listed.\n", h.ZeroCloses)
+	}
+	t := h.Totals
+	fmt.Fprintf(out, "\nIn        %14d sat\n", t.In)
+	fmt.Fprintf(out, "Out       %14d sat\n", t.Out)
+	fmt.Fprintf(out, "Fees      %14d sat\n", t.Fees)
+	fmt.Fprintf(out, "Expected  %14d sat  (in - out - fees)\n", t.Expected)
+	fmt.Fprintf(out, "Held now  %14d sat  (on-chain %d, in channels %d, closing %d)\n", t.Held, t.Onchain, t.InChannels, t.InPending)
+	if t.Uncollected != 0 {
+		fmt.Fprintf(out, "Set aside %14d sat  by channel closes, not collected into the on-chain balance yet\n", t.Uncollected)
+	}
+	if t.Unexplained != 0 {
+		fmt.Fprintf(out, "Difference %13d sat  not explained by the entries above\n", t.Unexplained)
+	} else {
+		fmt.Fprintln(out, "Every sat held now is explained by the entries above.")
 	}
 	fmt.Fprintln(out)
 	return nil

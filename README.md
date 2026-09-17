@@ -32,12 +32,11 @@ counts once a real backup went through the app on that OS. Steps:
 
 | Backup source | Linux | macOS | Windows |
 |---|---|---|---|
-| Google Drive | steps 1 to 5, roys, 2026-09-17 (node from 2019, 938 addresses: first history check took 90 min) | not run | not run |
+| Google Drive | steps 1 to 6, roys, 2026-09-17 (node from 2019, 938 addresses: first history check took 90 min; step 6 sent 15,370 sat plus a 351 sat fee, confirmed) | not run | not run |
 | iCloud | not run | not run | not run |
 | Backup file | steps 2 and 3 on a fresh node with no funds, 2026-09-16 | not run | not run |
 
-Step 6 has not been run anywhere yet. Update the table in the same pull
-request as any fix the run produced.
+Update the table in the same pull request as any fix the run produced.
 
 ## How the Breez app backup works
 
@@ -78,11 +77,14 @@ One window, one step at a time:
    too, and restarts itself once. The first sync of an old node takes a
    while: it scans the chain from the wallet's birthday.
 7. **Your funds.** Balances in channels, in pending closes and on-chain,
-   with the channel list and a hint about the next step. **History** lists
-   every closed channel with how it closed, your share, the closing
-   transaction and each sweep with its destination address (marked when it
-   is this node's own wallet), plus every on-chain transaction of the node,
-   all linked to mempool.space.
+   with the channel list and a hint about the next step. **History** is one
+   list of everything that moved money in or out of the app, newest first:
+   Lightning payments sent and received with their descriptions, deposits
+   and withdrawals, channel closes and where their funds went, on-chain
+   sends. Each entry shows the amount, the fee and a link to the
+   transaction. Totals at the top (received, sent, fees, held now) show
+   whether every sat is accounted for, and say so when the app holds more
+   or less than the list explains.
 8. **Close channels and withdraw** to an address. Cooperative closes pay the
    address directly. Channels whose peer is offline are skipped and can be
    force closed (funds mature after the channel delay, up to ~720 blocks).
@@ -112,11 +114,11 @@ every updated Windows 10/11 has.
 
 ```sh
 cd ui
-wails build -skipbindings -tags walletrpc \
+wails build -skipbindings -tags walletrpc,chainrpc \
   -ldflags "-X main.version=1.0.0 \
             -X github.com/breez/breez-mobile-recovery/core.GoogleClientID=<id> \
             -X github.com/breez/breez-mobile-recovery/core.GoogleClientSecret=<secret>"
-# Linux with webkit2gtk 4.1: -tags webkit2_41,walletrpc
+# Linux with webkit2gtk 4.1: -tags webkit2_41,walletrpc,chainrpc
 # other targets: -platform darwin/universal | windows/amd64 | linux/amd64
 ```
 
@@ -142,7 +144,7 @@ choose Open the first time, or run
 ## Command line tool
 
 ```sh
-go build -tags walletrpc -ldflags "-X github.com/breez/breez-mobile-recovery/core.GoogleClientID=<id> -X github.com/breez/breez-mobile-recovery/core.GoogleClientSecret=<secret>" .
+go build -tags walletrpc,chainrpc -ldflags "-X github.com/breez/breez-mobile-recovery/core.GoogleClientID=<id> -X github.com/breez/breez-mobile-recovery/core.GoogleClientSecret=<secret>" .
 ```
 
 ```
@@ -155,7 +157,8 @@ recovery status                                     # start node, sync, print ba
 recovery close --address bc1...                     # cooperative close of all channels
 recovery close --address bc1... --force             # force close channels whose peer is gone
 recovery sweep --address bc1...                     # send the on-chain balance out
-recovery history                                    # closed channels, sweeps and destinations, on-chain txs
+recovery history                                    # every payment, close and on-chain move, with totals
+recovery history --json                             # the same as JSON, plus the raw app payment list
 recovery lncli <command>                            # any lncli command against the node
 ```
 

@@ -30,8 +30,8 @@ docs/      GitHub Pages: signed-in.html, where the browser lands after a
 ## Build and run
 
 ```sh
-go build -tags walletrpc -o recovery-cli .    # CLI
-cd ui && wails build -tags webkit2_41,walletrpc -skipbindings -ldflags "-X main.version=dev"
+go build -tags walletrpc,chainrpc -o recovery-cli .    # CLI
+cd ui && wails build -tags webkit2_41,walletrpc,chainrpc -skipbindings -ldflags "-X main.version=dev"
 ```
 
 Wails CLI: `go install github.com/wailsapp/wails/v2/cmd/wails@v2.16.0`.
@@ -44,7 +44,7 @@ from repository secrets). `BREEZ_RECOVERY_WORKDIR` overrides the work
 folder, useful for testing next to a real one.
 
 `go test ./core` covers the phrase to key derivation and decryption.
-`go vet -tags walletrpc ./core . && go vet -tags webkit2_41,walletrpc ./ui` before
+`go vet -tags walletrpc,chainrpc ./core . && go vet -tags webkit2_41,walletrpc,chainrpc ./ui` before
 committing. The `walletrpc` tag compiles lnd's WalletKit RPC in; without
 it the address look-ahead after restore fails with an unimplemented RPC.
 
@@ -53,8 +53,10 @@ it the address look-ahead after restore fails with an unimplemented RPC.
 `ui/frontend/mock/serve.sh` serves the frontend with a mocked Go backend
 on http://127.0.0.1:8765/. Query parameters pick the state: `?hasNode=1`,
 `?scenario=channels|pending|onchain`, `?slow=list|restore|sync|rescan1|rescan2`
-holds a stage so it can be screenshotted. The mock's method list must
-match `ui/app.go`; add a stub when adding a bound method.
+holds a stage so it can be screenshotted. The History screen is reached
+with `?hasNode=1`, Continue, then History (mock ledger in mock.js). The
+mock's method list must match `ui/app.go`; add a stub when adding a bound
+method.
 
 The frontend talks to Go through `window.go.main.App.<Method>` and receives
 events through `window.runtime.EventsOn`: `progress` (a line of text),
@@ -97,6 +99,27 @@ Every value is rendered with textContent; keep it that way.
   by default next to DNS seed discovery.
 - Old nodes can make lnd's PendingChannels RPC fail ("unable to find
   arbitrator"). Status reports a warning instead of failing.
+- History (core/history.go) is a ledger with one entry per money
+  movement. Sources: the app's own payment list (`bindings.GetPayments`,
+  the same list Breez mobile showed, with descriptions), lnd's closed and
+  pending channels, lnd's invoices and payments (truth for what was paid;
+  entries the app list lacks are added without a description), and the
+  wallet's transactions. Every wallet transaction is either folded into
+  another entry (a cooperative close paying the wallet, a sweep of a
+  force-closed channel, the funding and the swap service's claim of a
+  deposit address) or listed as sent, received or moved on-chain, so no
+  sat appears twice. Deposit addresses are the P2WSH outputs lnd marks as
+  ours; they pair with the app's Deposit records by exact amount first,
+  then nearest in time within 14 days; an unpaired output spent to an
+  outside address is a refund. Entries carry Delta (net effect on the
+  app's funds, 0 for moves between its own balances) and Fee; totals
+  compare In - Out - Fees with what the node holds now and say how much is
+  unexplained. On Roy's 2019 node (3,479 entries, 28M sat through) the
+  residual is a few tens of thousands of sats, from invoices with memos
+  lnd cannot serialise and events the app never recorded; the screen says
+  so instead of hiding it. `recovery history --json` also prints the raw
+  app list and an lnd cross-check (`lnd` key) for chasing residuals.
+  Close block times come from lnd's ChainKit RPC (`chainrpc` build tag).
 - X11 drops a 1024px window icon silently; Linux uses the 256px
   `ui/build/windowicon.png`.
 - Wails on Linux replaces custom dialog buttons with Yes/No; check for

@@ -445,7 +445,7 @@ func (a *App) GetStatus() (*core.Status, error) {
 	return st, err
 }
 
-// GetHistory lists closed channels, their sweeps and all on-chain transactions.
+// GetHistory lists the app's money movements, newest first, with totals.
 func (a *App) GetHistory() (*core.History, error) {
 	var h *core.History
 	err := a.run("history", func(ctx context.Context) error {

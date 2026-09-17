@@ -64,15 +64,21 @@
     },
     GetStatus: async () => status,
     GetHistory: async () => ({
-      channels: [
-        { channelPoint: "e0d0afa45d3f972d24408bfecc7d0a4cae4ddf4b30bd9b744ab784824df9f963:0", peer: "031015a7", capacity: 100000, settledBalance: 0, closeType: "remote force", closeHeight: 812345, closingTxid: "e327189c57dcf56ae84ae61f05f4938d8d30174a91b6961a6b3558745a6887e9",
-          sweeps: [ { txid: "d4f478ede3dcb5076d4faae54e4f5e2f6b3886e7fbea16942a13bf3a391a8e2b", amount: 15721, address: "bc1p7j3rdls30fwvdtspk08jww2cztmj2k430hvh0c9v42mxzxec3cds5kf33l", toThisNode: true, height: 943064, time: 1774963087 } ] },
-        { channelPoint: "330f619591a7cbc7ed0e8d4bfa263ee2e91a4d1aeb3432d14e67873dbdfa9f03:0", peer: "031015a7", capacity: 50000, settledBalance: 12000, closeType: "cooperative", closeHeight: 790001, closingTxid: "fd407c0e7a5cd524044283e2ef3ac6a101d17a622758b5f5f858251c1857da21", sweeps: [] },
+      entries: [
+        { time: 1789600000, kind: "onchain_out", title: "Sent on-chain", detail: "Sent from the on-chain balance to bc1qar0srrr7xfkvy5l643lydnw9re59gtzzwf5mdq", amount: 14801, delta: -15721, fee: 920, status: "unconfirmed", txid: "5f4e3d2c1b0a9f8e7d6c5b4a3f2e1d0c9b8a7f6e5d4c3b2a1f0e9d8c7b6a5f4e", address: "bc1qar0srrr7xfkvy5l643lydnw9re59gtzzwf5mdq" },
+        { time: 1774963087, kind: "collected", title: "Channel funds collected", detail: "Funds of a closed channel arrived in the on-chain balance.", amount: 15721, delta: 0, fee: 211, status: "done", txid: "d4f478ede3dcb5076d4faae54e4f5e2f6b3886e7fbea16942a13bf3a391a8e2b" },
+        { time: 1771200000, kind: "channel_close", title: "Channel closed", detail: "Force closed by the peer. Your balance was set aside on-chain.", amount: 10453, delta: 0, fee: 0, status: "done", txid: "e327189c57dcf56ae84ae61f05f4938d8d30174a91b6961a6b3558745a6887e9" },
+        { time: 1771100000, kind: "channel_close", title: "Channel closed", detail: "Force closed by the peer. Your balance was set aside on-chain.", amount: 5479, delta: 0, fee: 0, status: "done", txid: "fd407c0e7a5cd524044283e2ef3ac6a101d17a622758b5f5f858251c1857da21" },
+        { time: 1768000000, kind: "sent", title: "Sent", detail: "Coffee at Blue Bottle", amount: 12000, delta: -12003, fee: 3, status: "done" },
+        { time: 1767000000, kind: "received", title: "Received", detail: "Invoice #1042", amount: 28000, delta: 28000, fee: 1200, feeNote: "taken by the channel provider before the payment reached the app", status: "done" },
+        { time: 1766000000, kind: "withdrawal", title: "Withdrawal", detail: "Sent from a channel to a bitcoin address.", amount: 50000, delta: -50600, fee: 600, status: "done", txid: "9c8b7a6f5e4d3c2b1a0f9e8d7c6b5a4f3e2d1c0b9a8f7e6d5c4b3a2f1e0d9c8b" },
+        { time: 1765000000, kind: "deposit", title: "Deposit", detail: "Bitcoin sent to the app's deposit address, moved into a channel.", amount: 60000, delta: 60000, fee: 0, status: "done", txid: "a1b2c3d4e5f60718293a4b5c6d7e8f9012345678901234567890abcdefabcdef" },
+        { time: 1764000000, kind: "received", title: "Received", detail: "from Alice", amount: 4000, delta: 4000, fee: 0, status: "done" },
       ],
-      transactions: [
-        { txid: "d4f478ede3dcb5076d4faae54e4f5e2f6b3886e7fbea16942a13bf3a391a8e2b", amount: 15721, fee: 211, height: 943064, time: 1774963087, label: "", outputs: [ { address: "bc1p7j3rdls30fwvdtspk08jww2cztmj2k430hvh0c9v42mxzxec3cds5kf33l", amount: 15721, ours: true } ] },
-        { txid: "5f4e3d2c1b0a9f8e7d6c5b4a3f2e1d0c9b8a7f6e5d4c3b2a1f0e9d8c7b6a5f4e", amount: -15721, fee: 920, height: 0, time: 1789600000, label: "", outputs: [ { address: "bc1qar0srrr7xfkvy5l643lydnw9re59gtzzwf5mdq", amount: 14801, ours: false } ] },
-      ] }),
+      totals: { in: 92000, out: 76801, fees: 1734, expected: 13465, onchain: 0, inChannels: 0, inPending: 0, held: 0, unexplained: -13465 },
+      zeroCloses: 1,
+      warnings: [],
+    }),
     ValidateAddress: async (a) => { if (!/^(bc1|1|3)[a-zA-Z0-9]{20,}$/.test(a)) throw new Error("invalid"); },
     CloseChannels: async (addr, force) => {
       progress("Giving channel peers a moment to connect..."); await sleep(800);

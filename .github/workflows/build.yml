@@ -67,7 +67,7 @@ jobs:
             -X github.com/breez/breez-mobile-recovery/core.GoogleClientID=${{ secrets.RECOVERY_GOOGLE_CLIENT_ID }}
             -X github.com/breez/breez-mobile-recovery/core.GoogleClientSecret=${{ secrets.RECOVERY_GOOGLE_CLIENT_SECRET }}
         run: |
-          tags="-tags walletrpc"; [[ "${{ runner.os }}" == "Linux" ]] && tags="-tags webkit2_41,walletrpc"
+          tags="-tags walletrpc,chainrpc"; [[ "${{ runner.os }}" == "Linux" ]] && tags="-tags webkit2_41,walletrpc,chainrpc"
           wails build -platform ${{ matrix.platform }} -skipbindings $tags -ldflags "$LDFLAGS"
 
       - name: Build CLI
@@ -77,7 +77,7 @@ jobs:
             -X github.com/breez/breez-mobile-recovery/core.GoogleClientSecret=${{ secrets.RECOVERY_GOOGLE_CLIENT_SECRET }}
         run: |
           ext=""; [[ "${{ runner.os }}" == "Windows" ]] && ext=".exe"
-          go build -tags walletrpc -ldflags "$LDFLAGS" -o "ui/build/bin/recovery-cli$ext" .
+          go build -tags walletrpc,chainrpc -ldflags "$LDFLAGS" -o "ui/build/bin/recovery-cli$ext" .
 
       - name: Package
         working-directory: ui/build/bin

@@ -475,60 +475,82 @@
     finally { setBusy(false); }
   }
 
+  function fmtSigned(n) {
+    n = Number(n || 0);
+    return (n > 0 ? "+" : n < 0 ? "\u2212" : "") + Math.abs(n).toLocaleString("en-US") + " sat";
+  }
+  function fmtDay(t) { return t ? new Date(t * 1000).toLocaleDateString(undefined, { year: "numeric", month: "short", day: "numeric" }) : "Date unknown"; }
+
   function renderHistory(h) {
-    const chans = $("#history-channels"), txs = $("#history-txs");
-    chans.innerHTML = ""; txs.innerHTML = "";
-    chans.appendChild(el("div", "list-title", "Closed channels" + (h.channels.length ? " (" + h.channels.length + ")" : "")));
-    if (!h.channels.length) chans.appendChild(el("p", "muted", "No closed channels."));
-    h.channels.forEach((c) => {
-      const box = el("div", "hist");
-      const head = el("div", "hist-head");
-      head.appendChild(el("span", "hist-title", c.closeType + " close" + (c.closeHeight ? " at block " + c.closeHeight.toLocaleString("en-US") : "")));
-      head.appendChild(el("span", "hist-sub", "capacity " + fmtSat(c.capacity) + (c.settledBalance ? ", your share paid by the close " + fmtSat(c.settledBalance) : "")));
-      box.appendChild(head);
-      const ch = el("div", "hist-row");
-      ch.appendChild(el("span", "mono", "channel " + c.channelPoint));
-      if (c.closingTxid) { const l = txLink(c.closingTxid); l.textContent = "Closing tx"; ch.appendChild(l); }
-      box.appendChild(ch);
-      if (!c.sweeps.length) {
-        const r = el("div", "hist-row");
-        r.appendChild(el("span", "muted", "No funds swept from this channel by this node."));
-        box.appendChild(r);
+    const totals = $("#history-totals"), warns = $("#history-warnings"), list = $("#history-list"), foot = $("#history-foot");
+    totals.innerHTML = ""; warns.innerHTML = ""; list.innerHTML = ""; foot.textContent = "";
+
+    const t = h.totals;
+    const rows = [
+      ["Received", fmtSigned(t.in)],
+      ["Sent", fmtSigned(-t.out)],
+      ["Fees", fmtSigned(-t.fees)],
+    ];
+    rows.forEach(([k, v]) => {
+      const r = el("div", "ledger-total");
+      r.appendChild(el("span", null, k));
+      r.appendChild(el("span", "mono", v));
+      totals.appendChild(r);
+    });
+    const held = el("div", "ledger-total ledger-total-strong");
+    held.appendChild(el("span", null, "In this app now"));
+    held.appendChild(el("span", "mono", fmtSat(t.held)));
+    totals.appendChild(held);
+    const parts = [];
+    if (t.onchain) parts.push(fmtSat(t.onchain) + " on-chain");
+    if (t.inChannels) parts.push(fmtSat(t.inChannels) + " in channels");
+    if (t.inPending) parts.push(fmtSat(t.inPending) + " in closing channels");
+    if (parts.length > 1) totals.appendChild(el("div", "ledger-total-sub", parts.join(", ")));
+    if (t.uncollected) {
+      const u = el("div", "ledger-total");
+      u.appendChild(el("span", null, "Set aside by channel closes, not collected yet"));
+      u.appendChild(el("span", "mono", fmtSat(t.uncollected)));
+      totals.appendChild(u);
+    }
+    if (t.unexplained === 0) {
+      totals.appendChild(el("div", "ledger-check ok", "Received minus sent minus fees matches what the app holds. Every sat is accounted for."));
+    } else {
+      const diff = Math.abs(t.unexplained).toLocaleString("en-US") + " sat";
+      totals.appendChild(el("div", "ledger-check warn", t.unexplained > 0
+        ? "The entries add up to " + diff + " less than the app holds. Money came in through an event the app did not record, so " + diff + " of what came in is missing from this list."
+        : "The entries add up to " + diff + " more than the app holds. Money left through an event the app did not record, such as a fee taken by the channel provider, so " + diff + " of what went out is missing from this list."));
+    }
+
+    (h.warnings || []).forEach((w) => warns.appendChild(el("div", "notice notice-warn", w)));
+
+    if (!h.entries.length) list.appendChild(el("p", "muted", "No payments or on-chain movements were found."));
+    h.entries.forEach((e) => {
+      const row = el("div", "ledger-row" + (e.delta === 0 ? " ledger-move" : ""));
+      row.appendChild(el("div", "ledger-date", fmtDay(e.time)));
+
+      const main = el("div", "ledger-main");
+      const head = el("div", "ledger-title");
+      head.appendChild(el("span", null, e.title));
+      if (e.status !== "done") head.appendChild(el("span", "tag " + (e.status === "closing" || e.status === "unconfirmed" ? "warn" : "ok"), e.status === "closing" ? "in progress" : e.status));
+      main.appendChild(head);
+      if (e.detail) main.appendChild(el("div", "ledger-detail", e.detail));
+      if (e.note) main.appendChild(el("div", "ledger-detail", e.note));
+      if (e.fee && e.feeNote) main.appendChild(el("div", "ledger-detail", "A fee of " + fmtSat(e.fee) + " was " + e.feeNote + "."));
+      if (e.txid) {
+        const l = txLink(e.txid); l.textContent = "View transaction";
+        main.appendChild(l);
       }
-      c.sweeps.forEach((s) => {
-        const r = el("div", "hist-row");
-        const left = el("div");
-        left.appendChild(el("div", null, fmtSat(s.amount) + " to " + (s.toThisNode ? "this node" : "an external address") + (s.time ? ", " + fmtTime(s.time) : "")));
-        left.appendChild(el("div", "mono", s.address));
-        r.appendChild(left);
-        r.appendChild(txLink(s.txid));
-        box.appendChild(r);
-      });
-      chans.appendChild(box);
+      row.appendChild(main);
+
+      const amt = el("div", "ledger-amount");
+      const sign = e.delta > 0 ? "in" : e.delta < 0 ? "out" : "move";
+      amt.appendChild(el("div", "ledger-value " + sign, sign === "in" ? fmtSigned(e.amount) : sign === "out" ? fmtSigned(-e.amount) : fmtSat(e.amount)));
+      if (e.fee && !e.feeNote) amt.appendChild(el("div", "ledger-fee", "fee " + fmtSat(e.fee)));
+      row.appendChild(amt);
+      list.appendChild(row);
     });
-    txs.appendChild(el("div", "list-title", "On-chain transactions" + (h.transactions.length ? " (" + h.transactions.length + ")" : "")));
-    if (!h.transactions.length) txs.appendChild(el("p", "muted", "No on-chain transactions."));
-    h.transactions.forEach((t) => {
-      const box = el("div", "hist");
-      const head = el("div", "hist-head");
-      head.appendChild(el("span", "hist-title", (t.amount >= 0 ? "+" : "") + fmtSat(t.amount) + (t.fee ? ", fee " + fmtSat(t.fee) : "")));
-      head.appendChild(el("span", "hist-sub", (t.height ? "block " + t.height.toLocaleString("en-US") + ", " : "unconfirmed, ") + fmtTime(t.time)));
-      box.appendChild(head);
-      const idrow = el("div", "hist-row");
-      idrow.appendChild(el("span", "mono", t.txid));
-      idrow.appendChild(txLink(t.txid));
-      box.appendChild(idrow);
-      t.outputs.forEach((o) => {
-        const r = el("div", "hist-row");
-        const left = el("div");
-        left.appendChild(el("div", null, fmtSat(o.amount) + (o.ours ? " to this node" : " to an external address")));
-        left.appendChild(el("div", "mono", o.address));
-        r.appendChild(left);
-        r.appendChild(addrLink(o.address));
-        box.appendChild(r);
-      });
-      txs.appendChild(box);
-    });
+
+    if (h.zeroCloses) foot.textContent = h.zeroCloses + (h.zeroCloses > 1 ? " channels" : " channel") + " closed with no balance of yours " + (h.zeroCloses > 1 ? "are" : "is") + " not listed.";
   }
 
   // ---------------------------------------------------------------- address validation
