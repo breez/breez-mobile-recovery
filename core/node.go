@@ -488,19 +488,20 @@ func (n *node) forceClose(ctx context.Context, channelPoint string) (string, err
 	return "", errors.New("unexpected close update")
 }
 
-func (n *node) status(ctx context.Context) (*Status, error) {
+func (n *node) status(ctx context.Context, spent *spentChannels) (*Status, error) {
 	info, err := n.info(ctx)
 	if err != nil {
 		return nil, err
 	}
 	st := &Status{
-		NodeID:      info.IdentityPubkey,
-		BlockHeight: info.BlockHeight,
-		Synced:      info.SyncedToChain,
-		Peers:       info.NumPeers,
-		Channels:    []Channel{},
-		Pending:     []PendingClose{},
-		Warnings:    []string{},
+		NodeID:        info.IdentityPubkey,
+		BlockHeight:   info.BlockHeight,
+		Synced:        info.SyncedToChain,
+		Peers:         info.NumPeers,
+		Channels:      []Channel{},
+		ClosedOnChain: []SpentChannel{},
+		Pending:       []PendingClose{},
+		Warnings:      []string{},
 	}
 	wb, err := n.walletBalance(ctx)
 	if err != nil {
@@ -513,6 +514,23 @@ func (n *node) status(ctx context.Context) (*Status, error) {
 	if err != nil {
 		return nil, err
 	}
+	live := chans[:0]
+	for _, c := range chans {
+		// A channel that closed after the backup was taken still looks
+		// open here. Its funds are on chain, not in the app.
+		if g, ok := spent.get(c.ChannelPoint); ok {
+			st.ClosedOnChain = append(st.ClosedOnChain, g)
+			continue
+		}
+		// A channel this backup's wallet cannot sign for belongs to
+		// another node; it is not this app's money.
+		if spent.isForeign(c.ChannelPoint) {
+			st.Warnings = append(st.Warnings, "channel "+c.ChannelPoint+" belongs to another node and is left alone")
+			continue
+		}
+		live = append(live, c)
+	}
+	chans = live
 	for _, c := range chans {
 		st.Channels = append(st.Channels, Channel{
 			ChannelPoint:  c.ChannelPoint,

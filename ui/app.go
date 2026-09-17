@@ -406,6 +406,12 @@ func (a *App) StartAndSync() (*core.Status, error) {
 		if err != nil {
 			return err
 		}
+		// Before anything is shown as spendable, make sure the chain agrees
+		// that the channels are open. A backup taken before a channel
+		// closed still lists it.
+		if _, err := c.CheckChannelsOnChain(ctx); err != nil {
+			return err
+		}
 		wruntime.EventsEmit(a.ctx, "progress", "Connecting to channel peers...")
 		c.WaitChannelsActive(ctx, 30*time.Second)
 		st, err = c.Status(ctx)
@@ -462,6 +468,18 @@ func (a *App) GetHistory() (*core.History, error) {
 		a.historyMu.Unlock()
 	}
 	return h, err
+}
+
+// CheckChannelsOnChain verifies open channels against the chain. The sync
+// path calls it; exposed so the frontend can re-check.
+func (a *App) CheckChannelsOnChain() ([]core.SpentChannel, error) {
+	var out []core.SpentChannel
+	err := a.run("check channels on chain", func(ctx context.Context) error {
+		var err error
+		out, err = a.c().CheckChannelsOnChain(ctx)
+		return err
+	})
+	return out, err
 }
 
 // SaveHistory asks where to save the history shown on screen and writes it

@@ -260,7 +260,11 @@ func startAndSync(ctx context.Context, c *core.Core) error {
 		}
 		return err
 	}
-	return c.WaitSynced(ctx, func(p core.SyncProgress) { fmt.Fprintln(out, p.Message) })
+	if err := c.WaitSynced(ctx, func(p core.SyncProgress) { fmt.Fprintln(out, p.Message) }); err != nil {
+		return err
+	}
+	_, err := c.CheckChannelsOnChain(ctx)
+	return err
 }
 
 func cmdStatus(ctx context.Context, c *core.Core, args []string) error {
