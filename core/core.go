@@ -143,6 +143,10 @@ type Core struct {
 	// invoices before lnd serves and then reads a nil stream), so the
 	// node is started by a fresh process.
 	restored bool
+
+	// spent holds channels that lnd lists as open although the chain says
+	// their funding output is gone. See CheckChannelsOnChain.
+	spent spentChannels
 }
 
 // New creates a session. It also captures the library's stdout logging into
@@ -654,16 +658,19 @@ type PendingClose struct {
 
 // Status is a snapshot of the restored node.
 type Status struct {
-	NodeID             string         `json:"nodeId"`
-	BlockHeight        uint32         `json:"blockHeight"`
-	Synced             bool           `json:"synced"`
-	Peers              uint32         `json:"peers"`
-	OnchainConfirmed   int64          `json:"onchainConfirmed"`
-	OnchainUnconfirmed int64          `json:"onchainUnconfirmed"`
-	Channels           []Channel      `json:"channels"`
-	Pending            []PendingClose `json:"pending"`
-	InChannels         int64          `json:"inChannels"`
-	InPending          int64          `json:"inPending"`
+	NodeID             string    `json:"nodeId"`
+	BlockHeight        uint32    `json:"blockHeight"`
+	Synced             bool      `json:"synced"`
+	Peers              uint32    `json:"peers"`
+	OnchainConfirmed   int64     `json:"onchainConfirmed"`
+	OnchainUnconfirmed int64     `json:"onchainUnconfirmed"`
+	Channels           []Channel `json:"channels"`
+	// ClosedOnChain lists channels lnd still calls open although the chain
+	// says otherwise: they closed after this backup was taken.
+	ClosedOnChain []SpentChannel `json:"closedOnChain"`
+	Pending       []PendingClose `json:"pending"`
+	InChannels    int64          `json:"inChannels"`
+	InPending     int64          `json:"inPending"`
 	// Warnings lists parts of the status that could not be read.
 	Warnings []string `json:"warnings"`
 }
@@ -673,7 +680,7 @@ func (c *Core) Status(ctx context.Context) (*Status, error) {
 	if c.node == nil {
 		return nil, errors.New("node not started")
 	}
-	return c.node.status(ctx)
+	return c.node.status(ctx, &c.spent)
 }
 
 // ValidateAddress checks a bitcoin address for the configured network.
@@ -707,9 +714,18 @@ func (c *Core) CloseChannels(ctx context.Context, address string, force bool) (*
 	if err := bindings.ValidateAddress(address); err != nil {
 		return nil, fmt.Errorf("invalid address: %w", err)
 	}
+	if !c.spent.done() {
+		if _, err := c.CheckChannelsOnChain(ctx); err != nil {
+			return nil, fmt.Errorf("could not check on chain which channels are still open, nothing was closed: %w", err)
+		}
+	}
 	chans, err := c.node.openChannels(ctx)
 	if err != nil {
 		return nil, err
+	}
+	chans, gone := c.liveChannels(chans)
+	for _, g := range gone {
+		c.progressf("  %s closed on chain already, in transaction %s; nothing to close.", g.ChannelPoint, g.ClosingTxID)
 	}
 	if len(chans) == 0 {
 		return &CloseResult{}, nil

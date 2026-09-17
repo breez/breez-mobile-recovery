@@ -320,7 +320,7 @@ func (c *Core) History(ctx context.Context) (*History, error) {
 		h.Warnings = append(h.Warnings, "Channels still closing could not be listed: "+err.Error())
 		pend = &lnrpc.PendingChannelsResponse{}
 	}
-	st, err := c.node.status(cctx)
+	st, err := c.node.status(cctx, &c.spent)
 	if err != nil {
 		return nil, err
 	}

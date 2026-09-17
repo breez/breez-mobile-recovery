@@ -420,6 +420,20 @@
       });
       lists.appendChild(list);
     }
+    if ((st.closedOnChain || []).length) {
+      lists.appendChild(el("div", "list-title", "Closed on chain"));
+      const list = el("div", "list");
+      st.closedOnChain.forEach((c) => {
+        const item = el("div", "item static");
+        const main = el("div", "item-main");
+        main.appendChild(el("div", "item-title", "Closed after this backup was taken"));
+        main.appendChild(el("div", "item-sub", c.closingTxid));
+        item.appendChild(main);
+        item.appendChild(txLink(c.closingTxid));
+        list.appendChild(item);
+      });
+      lists.appendChild(list);
+    }
     if (st.pending.length) {
       lists.appendChild(el("div", "list-title", "Closing"));
       const list = el("div", "list");
