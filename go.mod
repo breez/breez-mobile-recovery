@@ -7,6 +7,7 @@ go 1.25.0
 
 require (
 	github.com/breez/breez v0.0.0-20260906202014-eade35430c1b
+	github.com/btcsuite/btcd v0.24.3-0.20240921052913-67b8efd3ba53
 	github.com/btcsuite/btcd/chaincfg/chainhash v1.1.0
 	github.com/lightningnetwork/lnd v0.18.5-beta
 	github.com/wailsapp/wails/v2 v2.16.0
@@ -33,7 +34,6 @@ require (
 	github.com/bep/debounce v1.2.1 // indirect
 	github.com/breez/boltz v0.0.0-20250411100539-2f9ac32f077f // indirect
 	github.com/breez/lspd v0.0.0-20230630175015-34646d50a591 // indirect
-	github.com/btcsuite/btcd v0.24.3-0.20240921052913-67b8efd3ba53 // indirect
 	github.com/btcsuite/btcd/btcec/v2 v2.3.4 // indirect
 	github.com/btcsuite/btcd/btcutil v1.1.5 // indirect
 	github.com/btcsuite/btcd/btcutil/psbt v1.1.8 // indirect

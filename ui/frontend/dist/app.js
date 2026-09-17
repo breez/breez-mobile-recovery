@@ -310,9 +310,9 @@
     if (sec == null || sec < 0) return "estimating";
     if (sec < 60) return "under a minute";
     const m = Math.round(sec / 60);
-    if (m < 60) return "about " + m + " min";
+    if (m < 60) return m + " min";
     const h = Math.floor(m / 60), r = m % 60;
-    return "about " + h + " h" + (r ? " " + r + " min" : "");
+    return h + " h" + (r ? " " + r + " min" : "");
   }
   setInterval(() => {
     if (ui.screen !== "sync") return;
