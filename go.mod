@@ -9,6 +9,7 @@ require (
 	github.com/breez/breez v0.0.0-20260906202014-eade35430c1b
 	github.com/btcsuite/btcd v0.24.3-0.20240921052913-67b8efd3ba53
 	github.com/btcsuite/btcd/chaincfg/chainhash v1.1.0
+	github.com/lightninglabs/neutrino v0.16.1-0.20240425105051-602843d34ffd
 	github.com/lightningnetwork/lnd v0.18.5-beta
 	github.com/wailsapp/wails/v2 v2.16.0
 	golang.org/x/oauth2 v0.14.0
@@ -122,7 +123,6 @@ require (
 	github.com/leaanthony/u v1.1.1 // indirect
 	github.com/lib/pq v1.10.9 // indirect
 	github.com/lightninglabs/gozmq v0.0.0-20191113021534-d20a764486bf // indirect
-	github.com/lightninglabs/neutrino v0.16.1-0.20240425105051-602843d34ffd // indirect
 	github.com/lightninglabs/neutrino/cache v1.1.2 // indirect
 	github.com/lightninglabs/protobuf-hex-display v1.4.3-hex-display // indirect
 	github.com/lightningnetwork/lightning-onion v1.2.1-0.20240712235311-98bd56499dfb // indirect

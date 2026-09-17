@@ -92,6 +92,7 @@
     PrepareSweep: async (addr) => { await sleep(600); return { address: addr, amount: 1581900, options: [{ confTarget: 2, fee: 1840, txid: "a" }, { confTarget: 6, fee: 920, txid: "b" }, { confTarget: 25, fee: 410, txid: "c" }] }; },
     BroadcastSweep: async () => { await sleep(600); return "5f4e3d2c1b0a9f8e7d6c5b4a3f2e1d0c9b8a7f6e5d4c3b2a1f0e9d8c7b6a5f4e"; },
     Cancel: async () => {}, CopyText: async () => {}, OpenURL: async () => {},
+    CheckChannelsOnChain: async () => [],
     SaveHistory: async () => "/home/roys/breez-history-2026-09-17.csv",
     SaveLog: async () => "/home/roys/breez-recovery-2026-09-16.log", CopyLog: async () => {}, OpenWorkDir: async () => {},
     ChooseWorkDir: async () => "/home/roys/wallet", ForgetSignIns: async () => {},
