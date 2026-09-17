@@ -84,13 +84,17 @@ Every value is rendered with textContent; keep it that way.
   backup only knows the addresses in use at backup time. Funds the phone
   received or swept after its last backup sit on later addresses and were
   invisible (that is how Roy's 15,721 sat went missing on a second
-  restore). On the first start after a restore core derives 500 addresses
+  restore). On the first start after a restore core derives 50 addresses
   on each of four branches through WalletKit NextAddr (needs the
   `walletrpc` build tag), writes FORCE_RESCAN and the `addresses-extended`
   marker, stops the node and returns ErrRestartRequired; the app relaunches
   itself with BREEZ_RECOVERY_AUTOCONTINUE=1 and the CLI asks to be run
   again. Re-initialising the library in-process after a stop hangs, which
-  is why it is a program restart.
+  is why it is a program restart. The look-ahead was 500 per branch in
+  alpha.12 to alpha.20; that made Roy's folder redo the whole history
+  check (a second multi-hour pass) and slowed matching from 76 to 48
+  blocks/s, so it is 50 since alpha.21. Any change to the address set
+  forces a rescan on existing restores: state that cost before making one.
 - Rescan progress persists in wallet.db, a restart resumes where it was.
   A `FORCE_RESCAN` file in the work folder makes the library drop the
   transaction store and rescan from the birthday; handy for testing.

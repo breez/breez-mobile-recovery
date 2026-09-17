@@ -203,8 +203,12 @@ func startNode(ctx context.Context, cfg Config, svc *services) (*node, error) {
 // AddressLookahead is how many addresses are derived on each of the four
 // branches (witness key hash and taproot, external and change) after a
 // restore, so the history check also finds funds the phone received or
-// swept after its last backup. lnd's own seed recovery uses 2500.
-const AddressLookahead = 500
+// swept after its last backup. The backup already knows every address in
+// use at backup time and the phone used a handful more (Roy's missing
+// funds sat one address past the last known one), so 50 per branch is
+// plenty. Every extra address slows the history check: 500 per branch
+// (2,937 addresses in total) ran at 48 blocks/s against 76 with 938.
+const AddressLookahead = 50
 
 // extendAddresses derives the look-ahead addresses. The wallet only scans
 // addresses it has derived, and a backup only knows the addresses in use
