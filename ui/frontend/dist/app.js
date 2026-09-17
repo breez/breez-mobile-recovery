@@ -486,39 +486,30 @@
     totals.innerHTML = ""; warns.innerHTML = ""; list.innerHTML = ""; foot.textContent = "";
 
     const t = h.totals;
-    const rows = [
-      ["Received", fmtSigned(t.in)],
-      ["Sent", fmtSigned(-t.out)],
-      ["Fees", fmtSigned(-t.fees)],
-    ];
-    rows.forEach(([k, v]) => {
-      const r = el("div", "ledger-total");
-      r.appendChild(el("span", null, k));
-      r.appendChild(el("span", "mono", v));
+    const row = (label, value, cls) => {
+      const r = el("div", "ledger-total" + (cls ? " " + cls : ""));
+      r.appendChild(el("span", null, label));
+      r.appendChild(el("span", "mono", value));
       totals.appendChild(r);
-    });
-    const held = el("div", "ledger-total ledger-total-strong");
-    held.appendChild(el("span", null, "In this app now"));
-    held.appendChild(el("span", "mono", fmtSat(t.held)));
-    totals.appendChild(held);
+    };
+    row("Received", fmtSigned(t.in));
+    row("Sent", fmtSigned(-t.out));
+    row("Fees", fmtSigned(-t.fees));
+    row("Total of this list", fmtSigned(t.expected), "ledger-total-strong");
+    row("In this app now", fmtSat(t.held), "ledger-total-strong");
     const parts = [];
     if (t.onchain) parts.push(fmtSat(t.onchain) + " on-chain");
     if (t.inChannels) parts.push(fmtSat(t.inChannels) + " in channels");
     if (t.inPending) parts.push(fmtSat(t.inPending) + " in closing channels");
     if (parts.length > 1) totals.appendChild(el("div", "ledger-total-sub", parts.join(", ")));
-    if (t.uncollected) {
-      const u = el("div", "ledger-total");
-      u.appendChild(el("span", null, "Set aside by channel closes, not collected yet"));
-      u.appendChild(el("span", "mono", fmtSat(t.uncollected)));
-      totals.appendChild(u);
-    }
+    if (t.uncollected) row("Set aside by channel closes, not collected yet", fmtSat(t.uncollected));
     if (t.unexplained === 0) {
-      totals.appendChild(el("div", "ledger-check ok", "Received minus sent minus fees matches what the app holds. Every sat is accounted for."));
+      totals.appendChild(el("div", "ledger-check ok", "Every sat is accounted for."));
     } else {
-      const diff = Math.abs(t.unexplained).toLocaleString("en-US") + " sat";
+      row("Not accounted for", fmtSigned(t.unexplained), "ledger-total-strong");
       totals.appendChild(el("div", "ledger-check warn", t.unexplained > 0
-        ? "The entries add up to " + diff + " less than the app holds. Money came in through an event the app did not record, so " + diff + " of what came in is missing from this list."
-        : "The entries add up to " + diff + " more than the app holds. Money left through an event the app did not record, such as a fee taken by the channel provider, so " + diff + " of what went out is missing from this list."));
+        ? "Money the app received without recording it."
+        : "Money that left the app without being recorded, such as a fee taken by the channel provider."));
     }
 
     (h.warnings || []).forEach((w) => warns.appendChild(el("div", "notice notice-warn", w)));
@@ -535,7 +526,7 @@
       main.appendChild(head);
       if (e.detail) main.appendChild(el("div", "ledger-detail", e.detail));
       if (e.note) main.appendChild(el("div", "ledger-detail", e.note));
-      if (e.fee && e.feeNote) main.appendChild(el("div", "ledger-detail", "A fee of " + fmtSat(e.fee) + " was " + e.feeNote + "."));
+      if (e.fee && e.feeNote) main.appendChild(el("div", "ledger-detail", "Fee taken by the " + e.feeNote + " before it arrived: " + fmtSat(e.fee)));
       if (e.txid) {
         const l = txLink(e.txid); l.textContent = "View transaction";
         main.appendChild(l);

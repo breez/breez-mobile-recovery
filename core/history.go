@@ -45,7 +45,7 @@ type Entry struct {
 	Amount  int64  `json:"amount"`
 	Delta   int64  `json:"delta"`
 	Fee     int64  `json:"fee"`
-	FeeNote string `json:"feeNote,omitempty"` // set when the fee was taken before the money reached the app
+	FeeNote string `json:"feeNote,omitempty"` // who took the fee, when it was taken before the money reached the app
 	Status  string `json:"status"`            // "done", "pending", "closing", "unconfirmed"
 	Note    string `json:"note,omitempty"`    // extra line, e.g. when locked funds unlock
 	TxID    string `json:"txid,omitempty"`
@@ -177,12 +177,12 @@ func (c *Core) lndOnlyPayments(ctx context.Context, payments []*data.Payment) ([
 		if known[hash] {
 			return
 		}
-		out = append(out, Entry{Time: inv.SettleDate, Kind: KindReceived, Title: "Received", Detail: firstOf(strings.TrimSpace(inv.Memo), "Lightning payment, no description"), Amount: inv.AmtPaidSat, Delta: inv.AmtPaidSat, Status: "done"})
+		out = append(out, Entry{Time: inv.SettleDate, Kind: KindReceived, Title: "Received", Detail: firstOf(strings.TrimSpace(inv.Memo), "No description"), Amount: inv.AmtPaidSat, Delta: inv.AmtPaidSat, Status: "done"})
 	}, func(p *lnrpc.Payment) {
 		if known[p.PaymentHash] {
 			return
 		}
-		out = append(out, Entry{Time: p.CreationDate, Kind: KindSent, Title: "Sent", Detail: "Lightning payment, no description", Amount: p.ValueSat, Delta: -(p.ValueSat + p.FeeSat), Fee: p.FeeSat, Status: "done"})
+		out = append(out, Entry{Time: p.CreationDate, Kind: KindSent, Title: "Sent", Detail: "No description", Amount: p.ValueSat, Delta: -(p.ValueSat + p.FeeSat), Fee: p.FeeSat, Status: "done"})
 	})
 	return out, err
 }
@@ -368,9 +368,9 @@ func (b *ledger) addClose(e Entry, closingTxid string, resolutions []*lnrpc.Reso
 	switch {
 	case direct != nil:
 		b.explained[direct.TxHash] = true
-		e.Detail += " Your balance was paid straight into the on-chain balance."
+		e.Detail += " Funds paid to the on-chain balance."
 	case len(sweeps) > 0:
-		e.Detail += " Your balance was set aside on-chain and collected later, see below."
+		e.Detail += " Funds collected later."
 		for _, tx := range sweeps {
 			src := b.sweepInputs[tx.TxHash]
 			if src.closingTxids == nil {
@@ -386,12 +386,12 @@ func (b *ledger) addClose(e Entry, closingTxid string, resolutions []*lnrpc.Reso
 			b.sweepIndex[tx.TxHash] = len(b.entries)
 			b.entries = append(b.entries, Entry{
 				Time: tx.TimeStamp, Kind: KindCollected, Title: "Channel funds collected",
-				Detail: "Funds set aside by a channel close arrived in the on-chain balance.",
+				Detail: "Funds of a closed channel, now in the on-chain balance.",
 				Amount: sumOurs(tx), Fee: tx.TotalFees, Status: txStatus(tx), TxID: tx.TxHash,
 			})
 		}
 	default:
-		e.Detail += " Your balance was set aside on-chain and has not been collected yet."
+		e.Detail += " Funds not collected yet."
 		b.uncollected += e.Amount
 	}
 	b.entries = append(b.entries, e)
@@ -461,10 +461,10 @@ func (b *ledger) addClosedChannels(closed []*lnrpc.ChannelCloseSummary, payments
 func (b *ledger) addPendingChannels(pend *lnrpc.PendingChannelsResponse) {
 	now := time.Now().Unix()
 	for _, p := range pend.WaitingCloseChannels {
-		b.entries = append(b.entries, Entry{Time: now, Kind: KindChannelClose, Title: "Channel closing", Detail: "Waiting for the closing transaction to be published.", Amount: p.LimboBalance, Status: "closing"})
+		b.entries = append(b.entries, Entry{Time: now, Kind: KindChannelClose, Title: "Channel closing", Detail: "Waiting for the closing transaction.", Amount: p.LimboBalance, Status: "closing"})
 	}
 	for _, p := range pend.PendingClosingChannels {
-		b.entries = append(b.entries, Entry{Time: now, Kind: KindChannelClose, Title: "Channel closing", Detail: "Closed together with the peer. Waiting for the closing transaction to confirm.", Amount: p.Channel.LocalBalance, Status: "closing", TxID: p.ClosingTxid})
+		b.entries = append(b.entries, Entry{Time: now, Kind: KindChannelClose, Title: "Channel closing", Detail: "Waiting for the closing transaction to confirm.", Amount: p.Channel.LocalBalance, Status: "closing", TxID: p.ClosingTxid})
 		b.explained[p.ClosingTxid] = true
 	}
 	for _, p := range pend.PendingForceClosingChannels {
@@ -472,7 +472,7 @@ func (b *ledger) addPendingChannels(pend *lnrpc.PendingChannelsResponse) {
 		if p.BlocksTilMaturity > 0 {
 			note = "The funds unlock in " + blocksToText(p.BlocksTilMaturity) + "."
 		}
-		b.entries = append(b.entries, Entry{Time: now, Kind: KindChannelClose, Title: "Channel closing", Detail: "Force closed. The funds are locked for a while before they can be collected.", Amount: p.LimboBalance, Status: "closing", TxID: p.ClosingTxid, Note: note})
+		b.entries = append(b.entries, Entry{Time: now, Kind: KindChannelClose, Title: "Channel closing", Detail: "Force closed, funds locked for a while.", Amount: p.LimboBalance, Status: "closing", TxID: p.ClosingTxid, Note: note})
 		b.explained[p.ClosingTxid] = true
 		for _, tx := range b.spenders[p.ClosingTxid] {
 			b.explained[tx.TxHash] = true
@@ -583,9 +583,9 @@ func (b *ledger) addPayments(payments []*data.Payment) {
 			b.explained[so.tx.TxHash] = true
 			e := Entry{Time: so.tx.TimeStamp, Kind: KindDeposit, Title: "Deposit received", Amount: so.amount, Status: txStatus(so.tx), TxID: so.tx.TxHash}
 			if so.fromUs {
-				e.Kind, e.Title, e.Detail, e.Fee = KindOnchainSelf, "Moved to the deposit address", "Moved from the on-chain balance to the app's deposit address, not into a channel.", so.tx.TotalFees
+				e.Kind, e.Title, e.Detail, e.Fee = KindOnchainSelf, "Moved to the deposit address", "From the on-chain balance, not moved into a channel.", so.tx.TotalFees
 			} else {
-				e.Detail, e.Delta = "Bitcoin arrived at the app's deposit address, not moved into a channel.", so.amount
+				e.Detail, e.Delta = "Not moved into a channel.", so.amount
 			}
 			b.entries = append(b.entries, e)
 			e = Entry{} // the appended copy is what later edits must touch
@@ -596,12 +596,12 @@ func (b *ledger) addPayments(payments []*data.Payment) {
 			if so.spentBy != nil && sumOurs(so.spentBy) == 0 && firstExternal(so.spentBy) != "" {
 				b.explained[so.spentBy.TxHash] = true
 				addr := firstExternal(so.spentBy)
-				last.Detail = "Bitcoin arrived at the app's deposit address, never moved into a channel. It was refunded, see below."
+				last.Detail = "Not moved into a channel, refunded later."
 				if so.fromUs {
-					last.Detail = "Moved from the on-chain balance to the app's deposit address, never into a channel. It was refunded, see below."
+					last.Detail = "From the on-chain balance, not moved into a channel, refunded later."
 				}
 				b.entries = append(b.entries, Entry{
-					Time: so.spentBy.TimeStamp, Kind: KindRefund, Title: "Deposit refunded", Detail: "The deposit was sent back to " + addr,
+					Time: so.spentBy.TimeStamp, Kind: KindRefund, Title: "Deposit refunded", Detail: "To " + addr,
 					Amount: so.amount - so.spentBy.TotalFees, Delta: -so.amount, Fee: so.spentBy.TotalFees, Status: txStatus(so.spentBy), TxID: so.spentBy.TxHash, Address: addr,
 				})
 			}
@@ -615,15 +615,15 @@ func (b *ledger) addPayments(payments []*data.Payment) {
 			b.explained[so.spentBy.TxHash] = true // the swap service collecting its side
 		}
 		if so.fromUs {
-			best.Detail = "Moved into a channel from the app's on-chain balance."
+			best.Detail = "From the on-chain balance into a channel."
 			best.Delta = 0
 			best.Fee += so.tx.TotalFees
 			best.FeeNote = ""
 		} else {
-			best.Detail = "Bitcoin sent to the app's deposit address, moved into a channel."
+			best.Detail = "Into a channel."
 			best.Delta = best.Amount
 			if best.Fee > 0 {
-				best.FeeNote = "taken by the swap service before the funds reached the app"
+				best.FeeNote = "swap service"
 			}
 		}
 	}
@@ -660,25 +660,25 @@ func paymentEntry(p *data.Payment) (Entry, bool) {
 	switch p.Type {
 	case data.Payment_RECEIVED:
 		e.Kind, e.Title = KindReceived, "Received"
-		e.Detail = firstOf(desc, withPrefix("from ", payer), "Lightning payment, no description")
+		e.Detail = firstOf(desc, withPrefix("from ", payer), "No description")
 		e.Delta = p.Amount
 		if p.Fee > 0 {
-			e.FeeNote = "taken by the channel provider before the payment reached the app"
+			e.FeeNote = "channel provider"
 		}
 	case data.Payment_SENT:
 		e.Kind, e.Title = KindSent, "Sent"
-		e.Detail = firstOf(desc, withPrefix("to ", payee), keysendText(p), "Lightning payment, no description")
+		e.Detail = firstOf(desc, withPrefix("to ", payee), keysendText(p), "No description")
 		e.Delta = -(p.Amount + p.Fee)
 	case data.Payment_DEPOSIT:
 		e.Kind, e.Title = KindDeposit, "Deposit"
-		e.Detail = "Bitcoin sent to the app's deposit address, moved into a channel."
+		e.Detail = "Into a channel."
 		e.Delta = p.Amount
 		if p.Fee > 0 {
-			e.FeeNote = "taken by the swap service before the funds reached the app"
+			e.FeeNote = "swap service"
 		}
 	case data.Payment_WITHDRAWAL:
 		e.Kind, e.Title = KindWithdrawal, "Withdrawal"
-		e.Detail = "Sent from a channel to a bitcoin address."
+		e.Detail = "From a channel to a bitcoin address."
 		e.Delta = -(p.Amount + p.Fee)
 		e.TxID = p.RedeemTxID
 	default:
@@ -694,7 +694,7 @@ func keysendText(p *data.Payment) string {
 	if p.GroupName != "" {
 		return "to " + p.GroupName
 	}
-	return "Spontaneous payment, no description"
+	return "No description"
 }
 
 func withPrefix(prefix, s string) string {
@@ -716,13 +716,13 @@ func firstOf(opts ...string) string {
 func closeDetail(t lnrpc.ChannelCloseSummary_ClosureType) string {
 	switch t {
 	case lnrpc.ChannelCloseSummary_COOPERATIVE_CLOSE:
-		return "Closed together with the peer."
+		return "Closed with the peer."
 	case lnrpc.ChannelCloseSummary_LOCAL_FORCE_CLOSE:
 		return "Force closed by the app."
 	case lnrpc.ChannelCloseSummary_REMOTE_FORCE_CLOSE:
 		return "Force closed by the peer."
 	case lnrpc.ChannelCloseSummary_BREACH_CLOSE:
-		return "The peer published an old state and the app claimed the whole channel."
+		return "The peer cheated, the app claimed the whole channel."
 	case lnrpc.ChannelCloseSummary_FUNDING_CANCELED:
 		return "The channel was never opened."
 	case lnrpc.ChannelCloseSummary_ABANDONED:
@@ -782,17 +782,17 @@ func onchainEntry(tx *lnrpc.Transaction) (Entry, bool) {
 	case tx.Amount < 0 && toOthers > 0:
 		addr := firstExternal(tx)
 		e.Kind, e.Title = KindOnchainOut, "Sent on-chain"
-		e.Detail = "Sent from the on-chain balance to " + addr
+		e.Detail = "To " + addr
 		e.Amount = toOthers
 		e.Delta = -(toOthers + tx.TotalFees)
 		e.Address = addr
 	case fromUs && toOthers == 0:
 		e.Kind, e.Title = KindOnchainSelf, "Moved on-chain"
-		e.Detail = "Moved between the app's own addresses."
+		e.Detail = "Between the app's own addresses."
 		e.Amount = toOurs
 	default:
 		e.Kind, e.Title = KindOnchainIn, "Received on-chain"
-		e.Detail = "Bitcoin arrived at an address of the app's on-chain balance."
+		e.Detail = "To an address of this app."
 		e.Amount = tx.Amount
 		e.Delta = tx.Amount
 		e.Fee = 0
