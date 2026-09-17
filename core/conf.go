@@ -11,9 +11,13 @@ import (
 // These templates follow the production files shipped inside the mobile
 // APK (assets/flutter_assets/conf), minus bug reporting and Tor.
 //
-// With no peers given, neutrino discovers compact-filter peers through the
-// Bitcoin DNS seeds instead of pinning the Breez btcd hosts, so the tool
-// keeps working after those hosts go away.
+// Bitcoin peers go into breez.conf [Job Options] as peer= lines: the
+// library builds neutrino itself from that list (chainservice/init.go) and
+// ignores lnd.conf's [Neutrino] section. The list is exclusive: neutrino
+// connects only to those hosts and skips DNS seed discovery. That is how
+// the mobile app ran, and it matters: peers found through the seeds are
+// slow or drop the long filter queries a wallet rescan needs (76 blocks/s
+// against 600/s on the Breez node).
 func (c *Core) writeConfigs() error {
 	// Everything below is interpolated into ini files; a value with a line
 	// break or spaces could inject settings, so refuse those.
@@ -29,23 +33,8 @@ func (c *Core) writeConfigs() error {
 	lndConf := filepath.Join(c.cfg.WorkDir, "lnd.conf")
 
 	jobPeer := ""
-	neutrinoConnect := ""
-	if strings.TrimSpace(c.cfg.Peers) == "" {
-		// Discovery through the DNS seeds stays on, but the Breez node is
-		// added as a known good compact-filter peer while it exists: the
-		// public peers found through the seeds are often slow or drop
-		// the long filter queries a wallet rescan needs.
-		for _, p := range DefaultExtraPeers {
-			neutrinoConnect += "neutrino.addpeer=" + p + "\n"
-		}
-	}
-	for _, p := range strings.Split(c.cfg.Peers, ",") {
-		p = strings.TrimSpace(p)
-		if p == "" {
-			continue
-		}
+	for _, p := range c.peers() {
 		jobPeer += "peer=" + p + "\n"
-		neutrinoConnect += "neutrino.connect=" + p + "\n"
 	}
 	lspTokenLine := ""
 	if c.cfg.LSPToken != "" {
@@ -87,11 +76,25 @@ bitcoin.defaultremotedelay=720
 routing.assumechanvalid=1
 [fee]
 fee.url=%s
-[Neutrino]
-%s`, logLevel, c.cfg.Network, c.cfg.FeeURL, neutrinoConnect)
+`, logLevel, c.cfg.Network, c.cfg.FeeURL)
 
 	if err := os.WriteFile(breezConf, []byte(breez), 0600); err != nil {
 		return err
 	}
 	return os.WriteFile(lndConf, []byte(lnd), 0600)
+}
+
+// peers is the pinned bitcoin peer list: the configured one, else the
+// Breez node.
+func (c *Core) peers() []string {
+	var out []string
+	for _, p := range strings.Split(c.cfg.Peers, ",") {
+		if p = strings.TrimSpace(p); p != "" {
+			out = append(out, p)
+		}
+	}
+	if len(out) == 0 {
+		out = append(out, DefaultPeers...)
+	}
+	return out
 }

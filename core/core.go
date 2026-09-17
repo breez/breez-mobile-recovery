@@ -13,6 +13,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"os"
 	"path/filepath"
 	"strings"
@@ -34,10 +35,10 @@ const (
 	DefaultFeeURL = "https://nd1.breez.technology/fees/v1/btc-fee-estimates.json"
 )
 
-// DefaultExtraPeers are added to neutrino next to DNS seed discovery when
-// no peers are pinned. bb1 is already gone; bb2 is the remaining Breez
-// compact-filter node.
-var DefaultExtraPeers = []string{"bb2.breez.technology"}
+// DefaultPeers are the bitcoin peers neutrino connects to when none are
+// configured. bb1 is already gone; bb2 is the remaining Breez node with
+// compact filters. The list is exclusive, see writeConfigs.
+var DefaultPeers = []string{"bb2.breez.technology"}
 
 // Build-time values. The Google client is a "Desktop app" OAuth client of
 // the Breez Google Cloud project; its secret is not confidential by Google's
@@ -63,8 +64,7 @@ type Config struct {
 	ClosedChannelsURL string
 	FeeURL            string
 	// Peers pins bitcoin peers with compact filters, comma separated. Empty
-	// means discovery through the DNS seeds, which keeps the tool working
-	// after the Breez hosts are gone.
+	// means DefaultPeers. Neutrino connects only to the pinned peers.
 	Peers    string
 	LSPToken string
 	// LogLevel is lnd's debuglevel, "info" by default.
@@ -490,6 +490,9 @@ func (c *Core) StartNode(ctx context.Context) error {
 	if err := c.initLibrary(svc); err != nil {
 		return err
 	}
+	if err := c.checkPeers(ctx); err != nil {
+		return err
+	}
 	c.progressf("Starting the node...")
 	n, err := startNode(ctx, c.cfg, svc)
 	if err != nil {
@@ -851,4 +854,28 @@ func short(nodeID string) string {
 		return nodeID[:12] + "..."
 	}
 	return nodeID
+}
+
+// checkPeers makes sure at least one pinned bitcoin peer answers before the
+// node starts. Neutrino connects only to the pinned peers, so an
+// unreachable list would leave the sync waiting forever with no message.
+func (c *Core) checkPeers(ctx context.Context) error {
+	peers := c.peers()
+	var reasons []string
+	for _, p := range peers {
+		host := p
+		if _, _, err := net.SplitHostPort(p); err != nil {
+			host = net.JoinHostPort(p, "8333")
+		}
+		dctx, cancel := context.WithTimeout(ctx, 10*time.Second)
+		conn, err := (&net.Dialer{}).DialContext(dctx, "tcp", host)
+		cancel()
+		if err == nil {
+			conn.Close()
+			c.progressf("Bitcoin peer %s is reachable.", p)
+			return nil
+		}
+		reasons = append(reasons, p+": "+err.Error())
+	}
+	return fmt.Errorf("none of the bitcoin peers can be reached (%s). Check the internet connection, or set other peers with compact filters in Advanced settings", strings.Join(reasons, "; "))
 }

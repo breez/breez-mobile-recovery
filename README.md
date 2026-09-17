@@ -96,9 +96,10 @@ log lines as they happen. **Save log** writes the whole log plus the last
 clipboard. Ask users to attach it when reporting a problem.
 
 Advanced settings on the welcome screen: the work folder (default
-`~/.breez-recovery`) and pinned bitcoin peers (default: DNS seed discovery
-of compact-filter nodes, so the tool keeps working after the Breez hosts
-are gone).
+`~/.breez-recovery`) and the bitcoin peers (default: the Breez node
+bb2.breez.technology; the node connects only to the peers listed, and
+refuses to start when none of them answers). Set other peers with compact
+block filters here if the Breez node is gone.
 
 Environment overrides, mainly for testing: `BREEZ_RECOVERY_WORKDIR`,
 `BREEZ_GOOGLE_CLIENT_ID`, `BREEZ_GOOGLE_CLIENT_SECRET`.

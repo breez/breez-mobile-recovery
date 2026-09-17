@@ -82,7 +82,7 @@ func main() {
 	flag.StringVar(&cfg.LSPToken, "lsptoken", cfg.LSPToken, "Breez LSP token (optional)")
 	flag.StringVar(&cfg.FeeURL, "feeurl", cfg.FeeURL, "fee estimator URL lnd uses with neutrino")
 	flag.StringVar(&cfg.ICloudAPIToken, "icloud-token", cfg.ICloudAPIToken, "CloudKit API token for iCloud backups")
-	flag.StringVar(&cfg.Peers, "peer", "", "comma-separated bitcoin peers with compact filters; empty = discover via DNS seeds")
+	flag.StringVar(&cfg.Peers, "peer", "", "comma-separated bitcoin peers with compact filters; empty = the Breez node")
 	flag.BoolVar(&verbose, "v", false, "forward node logs and notifications to stderr")
 	flag.Usage = usage
 	flag.Parse()

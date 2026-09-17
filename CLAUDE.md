@@ -95,8 +95,13 @@ Every value is rendered with textContent; keep it that way.
   A `FORCE_RESCAN` file in the work folder makes the library drop the
   transaction store and rescan from the birthday; handy for testing.
 - Peer quality dominates sync time: 76 blocks/s with public peers versus
-  600/s with the Breez node. `neutrino.addpeer=bb2.breez.technology` is on
-  by default next to DNS seed discovery.
+  600/s with the Breez node. The library builds neutrino itself from
+  breez.conf `[Job Options] peer=` lines (chainservice/init.go, exclusive
+  list, MaxPeers 3) and IGNORES lnd.conf's `[Neutrino]` section: alphas
+  up to 17 wrote `neutrino.addpeer` there, which did nothing, and runs
+  only reached bb2 by luck through the DNS seeds. Since alpha.18 core
+  pins bb2.breez.technology through the job options and checks it
+  answers on 8333 before starting (fails loudly otherwise).
 - Old nodes can make lnd's PendingChannels RPC fail ("unable to find
   arbitrator"). Status reports a warning instead of failing.
 - History (core/history.go) is a ledger with one entry per money
