@@ -18,6 +18,14 @@ ui/        the desktop app (Wails: Go + a small HTML frontend)
 main.go    the command line tool
 ```
 
+## Before you start
+
+If the Breez app is still installed on your phone, make a safety copy of
+its data before running this tool: open the menu, then **Developers**,
+then **Export DB Files**, and keep the zip it shares somewhere safe. The
+tool restores from Google Drive or iCloud, not from that zip, but the zip
+holds everything the app knows should anything go wrong.
+
 ## Test plan
 
 A cell records the furthest step reached, who ran it and when. A run
