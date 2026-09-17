@@ -221,7 +221,19 @@ func (c *Core) guardRestore(force bool) error {
 		c.progressf("Stopping the running node before restoring over it...")
 		c.Stop()
 	}
-	return os.MkdirAll(c.cfg.WorkDir, 0700)
+	if err := os.MkdirAll(c.cfg.WorkDir, 0700); err != nil {
+		return err
+	}
+	// Starting over: the markers belong to the previous restore. Without
+	// this the fresh wallet would skip the address look-ahead and miss
+	// funds received after the backup. The backup itself replaces
+	// wallet.db, channel.db and breez.db; chain headers are kept.
+	for _, name := range []string{addressesExtendedFile, forceRescanFile} {
+		if err := os.Remove(filepath.Join(c.cfg.WorkDir, name)); err != nil && !os.IsNotExist(err) {
+			return err
+		}
+	}
+	return nil
 }
 
 // ValidateMnemonic checks a backup phrase and returns the encryption type it
