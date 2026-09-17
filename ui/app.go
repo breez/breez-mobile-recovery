@@ -33,6 +33,9 @@ type App struct {
 	core   *core.Core
 
 	log *logBuffer
+
+	historyMu   sync.Mutex
+	lastHistory *core.History // what the History screen shows, for export
 }
 
 func newApp() *App {
@@ -453,7 +456,44 @@ func (a *App) GetHistory() (*core.History, error) {
 		h, err = a.c().History(ctx)
 		return err
 	})
+	if err == nil {
+		a.historyMu.Lock()
+		a.lastHistory = h
+		a.historyMu.Unlock()
+	}
 	return h, err
+}
+
+// SaveHistory asks where to save the history shown on screen and writes it
+// as CSV. Returns the path, or "" when the user cancelled.
+func (a *App) SaveHistory() (string, error) {
+	a.historyMu.Lock()
+	h := a.lastHistory
+	a.historyMu.Unlock()
+	if h == nil {
+		return "", errors.New("open the history first")
+	}
+	path, err := wruntime.SaveFileDialog(a.ctx, wruntime.SaveDialogOptions{
+		Title:           "Export the history",
+		DefaultFilename: "breez-history-" + time.Now().Format("2006-01-02") + ".csv",
+		Filters:         []wruntime.FileFilter{{DisplayName: "Spreadsheet (*.csv)", Pattern: "*.csv"}},
+	})
+	if err != nil || path == "" {
+		return "", err
+	}
+	f, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0600)
+	if err != nil {
+		return "", err
+	}
+	if err := core.WriteHistoryCSV(f, h); err != nil {
+		f.Close()
+		return "", err
+	}
+	if err := f.Close(); err != nil {
+		return "", err
+	}
+	a.log.tool("history exported to " + path)
+	return path, nil
 }
 
 // ValidateAddress checks a bitcoin address.

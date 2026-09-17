@@ -394,6 +394,7 @@ func cmdSweep(ctx context.Context, c *core.Core, args []string) error {
 func cmdHistory(ctx context.Context, c *core.Core, args []string) error {
 	fs := flag.NewFlagSet("history", flag.ExitOnError)
 	asJSON := fs.Bool("json", false, "print the ledger and the app's raw payment list as JSON")
+	asCSV := fs.Bool("csv", false, "print the ledger as CSV (a spreadsheet)")
 	fs.Parse(args)
 	if err := startAndSync(ctx, c); err != nil {
 		return err
@@ -401,6 +402,9 @@ func cmdHistory(ctx context.Context, c *core.Core, args []string) error {
 	h, err := c.History(ctx)
 	if err != nil {
 		return err
+	}
+	if *asCSV {
+		return core.WriteHistoryCSV(out, h)
 	}
 	if *asJSON {
 		payments, err := c.RawPayments()

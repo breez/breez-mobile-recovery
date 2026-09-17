@@ -528,7 +528,7 @@
       const amt = el("div", "ledger-amount");
       const sign = e.delta > 0 ? "in" : e.delta < 0 ? "out" : "move";
       amt.appendChild(el("div", "ledger-value " + sign, sign === "in" ? fmtSigned(e.amount) : sign === "out" ? fmtSigned(-e.amount) : fmtSat(e.amount)));
-      if (e.fee && !e.feeNote) amt.appendChild(el("div", "ledger-fee", "fee " + fmtSat(e.fee)));
+      if (e.fee && !e.feeNote && e.fee !== e.amount) amt.appendChild(el("div", "ledger-fee", "fee " + fmtSat(e.fee)));
       row.appendChild(amt);
       list.appendChild(row);
     });
@@ -715,6 +715,7 @@
     "broadcast-sweep": broadcastSweep,
     "copy-txid": () => api.CopyText(ui.lastTxid),
     "open-txid": () => api.OpenURL("https://mempool.space/tx/" + ui.lastTxid),
+    "save-history": async () => { try { const p = await api.SaveHistory(); if (p) appendLog([new Date().toLocaleTimeString() + "  [recovery] history exported to " + p]); } catch (e) { showError(errMsg(e)); } },
     "save-log": async () => { try { const p = await api.SaveLog(); if (p) appendLog([new Date().toLocaleTimeString() + "  [recovery] log saved to " + p]); } catch (e) { showError(errMsg(e)); } },
     "copy-log": () => api.CopyLog(),
     "open-workdir": () => api.OpenWorkDir(),

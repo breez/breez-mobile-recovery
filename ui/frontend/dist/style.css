@@ -90,6 +90,7 @@ p { margin: 0 0 16px; }
 .card-wide { max-width: 760px; }
 .card-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
 .card-head h1 { margin: 0; }
+.head-actions { display: flex; gap: 8px; }
 
 /* buttons */
 .btn {

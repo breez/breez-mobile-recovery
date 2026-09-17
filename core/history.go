@@ -10,7 +10,10 @@ import (
 	"time"
 
 	"github.com/breez/breez/bindings"
+	"github.com/breez/breez/channeldbservice"
 	"github.com/breez/breez/data"
+	"github.com/btcsuite/btcd/wire"
+	"github.com/lightningnetwork/lnd/channeldb"
 	"github.com/lightningnetwork/lnd/lnrpc"
 	"github.com/lightningnetwork/lnd/lnrpc/chainrpc"
 	"google.golang.org/protobuf/proto"
@@ -159,6 +162,45 @@ func (n *node) walkLnd(ctx context.Context, onInvoice func(*lnrpc.Invoice), onPa
 	return skipped, nil
 }
 
+// closeLeftovers reads, for each closed channel, the local balance at the
+// last commitment (msat) from lnd's channel database and returns what the
+// close did not pay out: the msat below whole sats, or a whole balance
+// below the dust limit. Channels closed with HTLCs or time locks are left
+// out, their outputs are paid by other transactions.
+func (c *Core) closeLeftovers(closed []*lnrpc.ChannelCloseSummary) (map[string]int64, int, error) {
+	db, release, err := channeldbservice.Get(c.cfg.WorkDir)
+	if err != nil {
+		return nil, 0, fmt.Errorf("open the channel database: %w", err)
+	}
+	defer release()
+	left := map[string]int64{}
+	noHistory := 0
+	for _, ch := range closed {
+		if ch.TimeLockedBalance != 0 {
+			continue
+		}
+		op, err := wire.NewOutPointFromString(ch.ChannelPoint)
+		if err != nil {
+			return nil, 0, err
+		}
+		h, err := db.ChannelStateDB().FetchHistoricalChannel(op)
+		if errors.Is(err, channeldb.ErrChannelNotFound) || errors.Is(err, channeldb.ErrNoHistoricalBucket) {
+			noHistory++ // closed before lnd kept channel history
+			continue
+		}
+		if err != nil {
+			return nil, 0, fmt.Errorf("read closed channel %s: %w", ch.ChannelPoint, err)
+		}
+		if len(h.LocalCommitment.Htlcs) > 0 {
+			continue
+		}
+		if m := int64(h.LocalCommitment.LocalBalance) - ch.SettledBalance*1000; m > 0 {
+			left[ch.ChannelPoint] = m
+		}
+	}
+	return left, noHistory, nil
+}
+
 func appHashes(payments []*data.Payment) map[string]bool {
 	m := map[string]bool{}
 	for _, p := range payments {
@@ -169,9 +211,12 @@ func appHashes(payments []*data.Payment) map[string]bool {
 
 // lndOnlyPayments lists the payments and receipts lnd recorded that the
 // app's own list lacks.
-func (c *Core) lndOnlyPayments(ctx context.Context, payments []*data.Payment) ([]Entry, error) {
+// The second result has what lnd paid (amount and fee, msat) for the
+// payments the app also lists.
+func (c *Core) lndOnlyPayments(ctx context.Context, payments []*data.Payment) ([]Entry, map[string][2]int64, error) {
 	known := appHashes(payments)
 	var out []Entry
+	paid := map[string][2]int64{}
 	_, err := c.node.walkLnd(ctx, func(inv *lnrpc.Invoice) {
 		hash := fmt.Sprintf("%x", inv.RHash)
 		if known[hash] {
@@ -180,11 +225,33 @@ func (c *Core) lndOnlyPayments(ctx context.Context, payments []*data.Payment) ([
 		out = append(out, Entry{Time: inv.SettleDate, Kind: KindReceived, Title: "Received", Detail: firstOf(strings.TrimSpace(inv.Memo), "No description"), Amount: inv.AmtPaidSat, Delta: inv.AmtPaidSat, Status: "done"})
 	}, func(p *lnrpc.Payment) {
 		if known[p.PaymentHash] {
+			paid[p.PaymentHash] = settledMsat(p)
 			return
 		}
-		out = append(out, Entry{Time: p.CreationDate, Kind: KindSent, Title: "Sent", Detail: "No description", Amount: p.ValueSat, Delta: -(p.ValueSat + p.FeeSat), Fee: p.FeeSat, Status: "done"})
+		v := settledMsat(p)
+		amt, fee := v[0]/1000, (v[0]+v[1])/1000-v[0]/1000
+		out = append(out, Entry{Time: p.CreationDate, Kind: KindSent, Title: "Sent", Detail: "No description", Amount: amt, Delta: -(amt + fee), Fee: fee, Status: "done"})
 	})
-	return out, err
+	return out, paid, err
+}
+
+// settledMsat is what a payment really moved, in msat: amount and fee of
+// its settled parts. lnd's value_sat is the requested amount, which is
+// wrong for a payment marked succeeded with a failed part (one real node:
+// 132,000 requested, 118,474 settled, 13,525 failed).
+func settledMsat(p *lnrpc.Payment) [2]int64 {
+	var amt, fee int64
+	for _, h := range p.Htlcs {
+		if h.Status != lnrpc.HTLCAttempt_SUCCEEDED || h.Route == nil {
+			continue
+		}
+		amt += h.Route.TotalAmtMsat - h.Route.TotalFeesMsat
+		fee += h.Route.TotalFeesMsat
+	}
+	if amt == 0 {
+		return [2]int64{p.ValueMsat, p.FeeMsat}
+	}
+	return [2]int64{amt, fee}
 }
 
 // LndTotals compares lnd's invoice and payment records with the app's list.
@@ -261,16 +328,25 @@ func (c *Core) History(ctx context.Context) (*History, error) {
 	// lnd is the record of what was actually paid and received; the app's
 	// list adds descriptions. Anything lnd knows and the app missed is
 	// listed from lnd, without a description.
-	lndOnly, err := c.lndOnlyPayments(cctx, payments)
+	lndOnly, paid, err := c.lndOnlyPayments(cctx, payments)
 	if err != nil {
 		h.Warnings = append(h.Warnings, "The node's own payment records could not be compared with the app's list: "+err.Error())
 	}
 
+	left, noHistory, err := c.closeLeftovers(closed.Channels)
+	if err != nil {
+		return nil, err
+	}
+
 	b := newLedger(txsRes.Transactions)
+	b.closeLeftMsat = left
+	for _, m := range left {
+		b.leftMsat += m
+	}
 	b.blockTime = c.node.blockTimer(cctx, txsRes.Transactions)
 	b.addClosedChannels(closed.Channels, payments)
 	b.addPendingChannels(pend)
-	b.addPayments(payments)
+	b.addPayments(payments, paid)
 	b.entries = append(b.entries, lndOnly...)
 	b.addOnchain()
 
@@ -289,6 +365,7 @@ func (c *Core) History(ctx context.Context) (*History, error) {
 			t.Fees += e.Fee
 		}
 	}
+	t.Fees += (b.leftMsat + 500) / 1000
 	t.Expected = t.In - t.Out - t.Fees
 	t.Onchain = st.OnchainConfirmed + st.OnchainUnconfirmed
 	t.InChannels = st.InChannels
@@ -296,6 +373,14 @@ func (c *Core) History(ctx context.Context) (*History, error) {
 	t.Held = t.Onchain + t.InChannels + t.InPending
 	t.Uncollected = b.uncollected
 	t.Unexplained = t.Held + t.Uncollected - t.Expected
+	// A channel that closed before lnd kept channel history can hold up to
+	// one sat below whole sats that nothing records. A shortfall that small
+	// is that leftover, and counts as fees.
+	if gap := -t.Unexplained; gap > 0 && gap <= int64(noHistory) {
+		t.Fees += gap
+		t.Expected -= gap
+		t.Unexplained = 0
+	}
 	h.Warnings = append(h.Warnings, st.Warnings...)
 	return h, nil
 }
@@ -303,11 +388,18 @@ func (c *Core) History(ctx context.Context) (*History, error) {
 // ledger accumulates entries while keeping track of which wallet
 // transactions are already explained by another entry.
 type ledger struct {
-	txs       []*lnrpc.Transaction
-	byID      map[string]*lnrpc.Transaction
-	spenders  map[string][]*lnrpc.Transaction // txid -> txs spending one of its outputs
-	explained map[string]bool                 // wallet txs folded into another entry
-	blockTime func(height uint32, txid string) int64
+	txs      []*lnrpc.Transaction
+	byID     map[string]*lnrpc.Transaction
+	spenders map[string][]*lnrpc.Transaction // txid -> txs spending one of its outputs
+	// leftMsat is money that left below whole sats: the msat part of
+	// outgoing payments (lnd fees are often fractions of a sat) and channel
+	// balances a close could not pay out. The totals count it as fees.
+	leftMsat int64
+	// closeLeftMsat is, per closed channel, the final local balance the
+	// closing transaction did not pay out.
+	closeLeftMsat map[string]int64
+	explained     map[string]bool // wallet txs folded into another entry
+	blockTime     func(height uint32, txid string) int64
 
 	entries     []Entry
 	zeroCloses  int
@@ -411,6 +503,17 @@ func (b *ledger) addClosedChannels(closed []*lnrpc.ChannelCloseSummary, payments
 			}
 		}
 		if amount == 0 {
+			if lost := b.closeLeftMsat[ch.ChannelPoint] / 1000; lost > 0 && len(ch.Resolutions) == 0 {
+				// The app's last balance in this channel was too small for
+				// an output of its own, so the closing transaction paid it
+				// to the miners.
+				b.leftMsat -= lost * 1000
+				b.entries = append(b.entries, Entry{
+					Time: b.blockTime(ch.CloseHeight, ch.ClosingTxHash), Kind: KindChannelClose, Title: "Channel closed",
+					Detail: "Balance too small to pay out, went to the network fee.", Amount: lost, Delta: -lost, Fee: lost, Status: "done", TxID: ch.ClosingTxHash,
+				})
+				continue
+			}
 			b.zeroCloses++
 			continue
 		}
@@ -467,12 +570,26 @@ func (b *ledger) addPendingChannels(pend *lnrpc.PendingChannelsResponse) {
 		b.entries = append(b.entries, Entry{Time: now, Kind: KindChannelClose, Title: "Channel closing", Detail: "Waiting for the closing transaction to confirm.", Amount: p.Channel.LocalBalance, Status: "closing", TxID: p.ClosingTxid})
 		b.explained[p.ClosingTxid] = true
 	}
+	want := map[string]bool{}
+	for _, p := range pend.PendingForceClosingChannels {
+		if p.BlocksTilMaturity <= 0 && len(p.PendingHtlcs) == 0 && p.ClosingTxid != "" {
+			want[p.ClosingTxid] = true
+		}
+	}
+	swept := sweptBy(b.txs, want)
 	for _, p := range pend.PendingForceClosingChannels {
 		note := ""
 		if p.BlocksTilMaturity > 0 {
 			note = "The funds unlock in " + blocksToText(p.BlocksTilMaturity) + "."
 		}
-		b.entries = append(b.entries, Entry{Time: now, Kind: KindChannelClose, Title: "Channel closing", Detail: "Force closed, funds locked for a while.", Amount: p.LimboBalance, Status: "closing", TxID: p.ClosingTxid, Note: note})
+		e := Entry{Time: now, Kind: KindChannelClose, Title: "Channel closing", Detail: "Force closed, funds locked for a while.", Amount: p.LimboBalance, Status: "closing", TxID: p.ClosingTxid, Note: note}
+		if swept[p.ClosingTxid] {
+			e.Title, e.Detail, e.Status, e.Note = "Channel closed", "Force closed, funds already swept.", "done", ""
+			if t := b.spenders[p.ClosingTxid]; len(t) > 0 {
+				e.Time = t[0].TimeStamp
+			}
+		}
+		b.entries = append(b.entries, e)
 		b.explained[p.ClosingTxid] = true
 		for _, tx := range b.spenders[p.ClosingTxid] {
 			b.explained[tx.TxHash] = true
@@ -529,9 +646,25 @@ func (b *ledger) swapOutputs() []*swapOutput {
 // the on-chain transaction that funded the deposit address, so a swap
 // shows as one entry: money in when the bitcoin came from outside, a move
 // when it came from the app's own on-chain balance.
-func (b *ledger) addPayments(payments []*data.Payment) {
+//
+// paid holds what lnd recorded for outgoing payments, in msat. The app's list can
+// be off (a payment with a failed part is listed at the requested amount),
+// so when the totals differ lnd's amount and fee are used.
+func (b *ledger) addPayments(payments []*data.Payment, paid map[string][2]int64) {
 	var deposits []int // indexes into b.entries, which only grows
 	for _, p := range payments {
+		if v, ok := paid[p.PaymentHash]; ok {
+			// A send's fee is lnd's routing fee. A withdrawal keeps the
+			// app's split (its fee is the swap service's) unless the
+			// total is off.
+			if (v[0]+v[1])/1000 != p.Amount+p.Fee || (p.Type == data.Payment_SENT && v[0]/1000 != p.Amount) {
+				fixed := proto.Clone(p).(*data.Payment)
+				fixed.Amount, fixed.Fee = v[0]/1000, (v[0]+v[1])/1000-v[0]/1000
+				p = fixed
+			}
+			// Whole sats are listed; the msat below them still left.
+			b.leftMsat += v[0] + v[1] - (p.Amount+p.Fee)*1000
+		}
 		e, ok := paymentEntry(p)
 		if !ok {
 			continue

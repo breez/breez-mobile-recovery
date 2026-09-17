@@ -91,7 +91,8 @@ One window, one step at a time:
    and withdrawals, channel closes and where their funds went, on-chain
    sends. Each entry shows the amount, the fee and a link to the
    transaction. Totals at the top: received, sent, fees, the total of the
-   list, and what the app holds now.
+   list, and what the app holds now. **Export** saves the list as a CSV
+   file you can open in a spreadsheet.
 8. **Close channels and withdraw** to an address. Cooperative closes pay the
    address directly. Channels whose peer is offline are skipped and can be
    force closed (funds mature after the channel delay, up to ~720 blocks).
@@ -167,6 +168,7 @@ recovery close --address bc1... --force             # force close channels whose
 recovery sweep --address bc1...                     # send the on-chain balance out
 recovery history                                    # every payment, close and on-chain move, with totals
 recovery history --json                             # the same as JSON, plus the raw app payment list
+recovery history --csv > history.csv                # the same as a spreadsheet
 recovery lncli <command>                            # any lncli command against the node
 ```
 

@@ -132,8 +132,31 @@ Every value is rendered with textContent; keep it that way.
   show In, Out, Fees, the list total and what the node holds now; the
   Unexplained field stays in the JSON but the screen and the CLI do not
   show it (Roy: no notes about a gap, even when there is one). On Roy's 2019 node (3,479 entries, 28M sat through) the
-  residual is 12,798 sat, from invoices with memos lnd cannot serialise
-  and events the app never recorded. `recovery history --json` also prints the raw
+  list total was -12,798 against 0 held, fully traced 2026-09-17:
+  (1) one payment the app list (and lnd's value_sat) records at the
+  requested 132,000 sat while only a 118,474 sat part settled; sends now
+  take amount and routing fee from lnd's settled HTLCs (withdrawals keep
+  the app's split, their fee is the swap service's); (2) money that left below whole sats,
+  counted as fees (`leftMsat`): the msat part of each send (345 sat) and
+  the final channel balance each close could not pay out (5 sat of
+  fractions), read in-process from lnd's historical channels via
+  `channeldbservice.Get` (`closeLeftovers`); (3) a cooperative close
+  that settled 0 while the channel held 340 sat, below the 573 sat dust
+  limit, found the same way and listed as an entry whose whole amount is
+  fee. A shortfall of up to one sat per channel
+  closed before lnd kept channel history (here two, af756ad2... and
+  21552873..., whose sub-sat balances cannot be read) is that leftover
+  too and counts as fees, so the list now totals 0 against 0 held. A
+  bigger gap is never absorbed; it stays visible in the totals. Receives match lnd's settled invoices to
+  the sat; the 16 invoices with non-UTF-8 memos are all in the app list.
+  Tools used: channeldb.Open on a COPY of channel.db (QueryInvoices,
+  FetchPayments, FetchHistoricalChannel for the final LocalBalance), and
+  `recovery lncli listchaintxns` (confirmed amounts sum to the balance).
+  History exports as CSV: `core.WriteHistoryCSV` (entries newest first,
+  then a blank line and the totals), the Export button on the History
+  screen (`App.SaveHistory`, which writes what the screen last showed) and
+  `recovery history --csv`.
+  `recovery history --json` also prints the raw
   app list and an lnd cross-check (`lnd` key) for chasing residuals.
   Close block times come from lnd's ChainKit RPC (`chainrpc` build tag).
 - X11 drops a 1024px window icon silently; Linux uses the 256px

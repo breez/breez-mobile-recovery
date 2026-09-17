@@ -541,9 +541,54 @@ func (n *node) status(ctx context.Context) (*Status, error) {
 		st.Pending = append(st.Pending, PendingClose{ChannelPoint: c.Channel.ChannelPoint, Kind: "cooperative", ClosingTxID: c.ClosingTxid, Amount: c.Channel.LocalBalance})
 		st.InPending += c.Channel.LocalBalance
 	}
+	swept, err := n.sweptCloses(ctx, pend)
+	if err != nil {
+		st.Warnings = append(st.Warnings, "could not check whether closing channels were already swept: "+err.Error())
+	}
 	for _, c := range pend.PendingForceClosingChannels {
+		if swept[c.ClosingTxid] {
+			continue
+		}
 		st.Pending = append(st.Pending, PendingClose{ChannelPoint: c.Channel.ChannelPoint, Kind: "force", ClosingTxID: c.ClosingTxid, Amount: c.LimboBalance, BlocksToMature: c.BlocksTilMaturity})
 		st.InPending += c.LimboBalance
 	}
 	return st, nil
+}
+
+// sweptCloses returns the force closes whose funds a confirmed wallet
+// transaction already spent. A backup taken before the phone swept a close
+// still lists it as closing, and lnd only notices the sweep when its own
+// spend check comes back, which can take hours after a restore. Closes with
+// HTLCs or a time lock left are never reported, lnd has more to do there.
+func (n *node) sweptCloses(ctx context.Context, pend *lnrpc.PendingChannelsResponse) (map[string]bool, error) {
+	want := map[string]bool{}
+	for _, c := range pend.PendingForceClosingChannels {
+		if c.BlocksTilMaturity <= 0 && len(c.PendingHtlcs) == 0 && c.ClosingTxid != "" {
+			want[c.ClosingTxid] = true
+		}
+	}
+	if len(want) == 0 {
+		return nil, nil
+	}
+	res, err := n.client.GetTransactions(ctx, &lnrpc.GetTransactionsRequest{})
+	if err != nil {
+		return nil, err
+	}
+	return sweptBy(res.Transactions, want), nil
+}
+
+// sweptBy returns the txids in want that a confirmed transaction spends.
+func sweptBy(txs []*lnrpc.Transaction, want map[string]bool) map[string]bool {
+	swept := map[string]bool{}
+	for _, tx := range txs {
+		if tx.NumConfirmations < 1 {
+			continue
+		}
+		for _, prev := range tx.PreviousOutpoints {
+			if i := strings.LastIndexByte(prev.Outpoint, ':'); i > 0 && want[prev.Outpoint[:i]] {
+				swept[prev.Outpoint[:i]] = true
+			}
+		}
+	}
+	return swept
 }
