@@ -133,6 +133,10 @@ jobs:
       - name: Upload every asset, with retries
         env:
           GH_TOKEN: ${{ github.token }}
+          # This job has no checkout, so gh cannot read the repository from
+          # a git folder; without this every gh call fails and the step
+          # reports a complete release as missing its files.
+          GH_REPO: ${{ github.repository }}
           TAG: ${{ github.ref_name }}
         run: |
           set -u
