@@ -39,7 +39,7 @@
           <ol class="steps">
             <li><strong>Find your backup</strong> in Google Drive, iCloud or a backup file.</li>
             <li><strong>Sync</strong> the restored app with the bitcoin network. First time takes a while.</li>
-            <li><strong>Move the funds</strong> by closing your channels to an address you control.</li>
+            <li><strong>Move the funds</strong> to a bitcoin address you control.</li>
           </ol>
           <div class="actions">
             <button class="btn btn-primary btn-lg" type="button" data-action="start">Get started</button>
@@ -188,7 +188,6 @@
           <div class="stage" data-stage="headers"><span class="dot"></span>Catching up with the bitcoin chain</div>
           <div class="stage" data-stage="rescan"><span class="dot"></span>Checking your channel and payment history</div>
           <div class="stage" data-stage="channels"><span class="dot"></span>Checking your channels on the bitcoin chain</div>
-          <div class="stage" data-stage="peers"><span class="dot"></span>Connecting to channel peers</div>
         </div>
         <p class="progress-line" id="sync-message"></p>
         <div class="live hidden" id="sync-live">
@@ -231,7 +230,6 @@
         <div id="wallet-lists"></div>
         <div class="actions">
           <button class="btn btn-ghost" type="button" data-action="go-history">History</button>
-          <button class="btn btn-primary" type="button" data-action="go-withdraw" id="btn-withdraw">Close channels and withdraw</button>
           <button class="btn btn-primary" type="button" data-action="go-sweep" id="btn-sweep">Send on-chain balance</button>
         </div>
         <div class="muted small" id="wallet-node"></div>
@@ -254,40 +252,6 @@
         <p id="history-foot" class="muted small"></p>
         <div class="actions">
           <button class="btn btn-ghost" type="button" data-action="back-wallet">Back</button>
-        </div>
-      </div>
-    </section>
-
-    <!-- 9. Withdraw (close channels) -->
-    <section class="screen" data-screen="withdraw">
-      <div class="card">
-        <h1>Close channels and withdraw</h1>
-        <p class="lead">Each channel is closed together with its peer and your share is paid directly to the address below. Use an address from a wallet you control.</p>
-        <div class="field">
-          <label for="close-address">Bitcoin address</label>
-          <input id="close-address" type="text" spellcheck="false" autocomplete="off" placeholder="bc1...">
-          <div class="hint" id="close-address-hint"></div>
-        </div>
-        <label class="check">
-          <input type="checkbox" id="close-force">
-          <span>Also force close channels whose peer is offline. Those funds arrive after a delay of up to about five days.</span>
-        </label>
-        <div class="actions">
-          <button class="btn btn-ghost" type="button" data-action="back-wallet">Back</button>
-          <button class="btn btn-primary" type="button" data-action="do-close">Close channels</button>
-        </div>
-      </div>
-    </section>
-
-    <!-- 10. Close result -->
-    <section class="screen" data-screen="closeresult">
-      <div class="card card-wide">
-        <h1 id="closeresult-title">Channels closing</h1>
-        <p class="lead" id="closeresult-lead"></p>
-        <div id="closeresult-list" class="list"></div>
-        <div class="actions">
-          <button class="btn btn-secondary" type="button" data-action="force-skipped" id="btn-force-skipped">Force close the skipped channels</button>
-          <button class="btn btn-primary" type="button" data-action="back-wallet-refresh">Back to funds</button>
         </div>
       </div>
     </section>

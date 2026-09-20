@@ -131,3 +131,12 @@ func TestFundingHeightHint(t *testing.T) {
 		}
 	}
 }
+
+func TestLncliRefusesClosingCommands(t *testing.T) {
+	c := &Core{node: &node{}}
+	for _, cmd := range []string{"closechannel --force abc 0", "CloseAllChannels", "abandonchannel abc 0"} {
+		if _, err := c.Lncli(context.Background(), cmd); err == nil {
+			t.Errorf("%q was not refused", cmd)
+		}
+	}
+}

@@ -63,7 +63,6 @@
         emit("sync", { stage: "channels", height, target: 967310, peers: 8, percent: (height - 758000) / (967310 - 758000) * 100, message: "Making sure your channels are still open", found: 0, throughTime: 0, remaining: height === 758000 ? -1 : Math.round((967310 - height) / 550) });
         await sleep(slow === "channels" && height === 860000 ? 600000 : 600);
       }
-      emit("sync", { stage: "peers", height: 0, target: 0, peers: 8, percent: -1, message: "Connecting to channel peers...", found: 0, throughTime: 0, remaining: -1 }); await sleep(500);
       return status;
     },
     GetStatus: async () => status,
@@ -84,15 +83,6 @@
       warnings: [],
     }),
     ValidateAddress: async (a) => { if (!/^(bc1|1|3)[a-zA-Z0-9]{20,}$/.test(a)) throw new Error("invalid"); },
-    CloseChannels: async (addr, force) => {
-      progress("Giving channel peers a moment to connect..."); await sleep(800);
-      progress("Closing 2 channel(s) cooperatively, funds to " + addr + "..."); await sleep(800);
-      progress("Keeping the node running so the closing transactions are broadcast..."); await sleep(600);
-      return { closed: force ? 2 : 1, skipped: force ? 0 : 1, channels: [
-        { channelPoint: statuses.channels.channels[0].channelPoint, status: "closing", txid: "e4d3c2b1a0f9e8d7c6b5a4f3e2d1c0b9a8f7e6d5c4b3a2f1e0d9c8b7a6f5e4d3" },
-        { channelPoint: statuses.channels.channels[1].channelPoint, status: force ? "force_closing" : "skipped", txid: force ? "9c8b7a6f5e4d3c2b1a0f9e8d7c6b5a4f3e2d1c0b9a8f7e6d5c4b3a2f1e0d9c8b" : "" },
-      ] };
-    },
     PrepareSweep: async (addr) => { await sleep(600); return { address: addr, amount: 1581900, options: [{ confTarget: 2, fee: 1840, txid: "a" }, { confTarget: 6, fee: 920, txid: "b" }, { confTarget: 25, fee: 410, txid: "c" }] }; },
     BroadcastSweep: async () => { await sleep(600); return "5f4e3d2c1b0a9f8e7d6c5b4a3f2e1d0c9b8a7f6e5d4c3b2a1f0e9d8c7b6a5f4e"; },
     RestoreOther: async () => false,

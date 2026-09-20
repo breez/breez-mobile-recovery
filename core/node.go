@@ -14,7 +14,6 @@ import (
 	"github.com/breez/breez/config"
 	"github.com/breez/breez/data"
 	"github.com/breez/breez/lnnode"
-	"github.com/btcsuite/btcd/chaincfg/chainhash"
 	"github.com/lightningnetwork/lnd/lnrpc"
 	"github.com/lightningnetwork/lnd/lnrpc/walletrpc"
 	"google.golang.org/grpc"
@@ -412,30 +411,6 @@ func syncProgress(info *lnrpc.GetInfoResponse) SyncProgress {
 	return p
 }
 
-// waitChannelsActive gives lnd a moment to reconnect to channel peers (the
-// LSP) so a cooperative close has a chance. Returns once every channel is
-// active or the timeout passes.
-func (n *node) waitChannelsActive(ctx context.Context, timeout time.Duration, progressf func(string, ...interface{})) {
-	deadline := time.Now().Add(timeout)
-	reported := false
-	for time.Now().Before(deadline) {
-		if info, err := n.info(ctx); err == nil {
-			if info.NumInactiveChannels == 0 {
-				return
-			}
-			if !reported {
-				progressf("Waiting for channel peers to come online (%d active, %d inactive)...", info.NumActiveChannels, info.NumInactiveChannels)
-				reported = true
-			}
-		}
-		select {
-		case <-ctx.Done():
-			return
-		case <-time.After(5 * time.Second):
-		}
-	}
-}
-
 func (n *node) walletBalance(ctx context.Context) (*lnrpc.WalletBalanceResponse, error) {
 	return n.client.WalletBalance(ctx, &lnrpc.WalletBalanceRequest{})
 }
@@ -450,85 +425,6 @@ func (n *node) openChannels(ctx context.Context) ([]*lnrpc.Channel, error) {
 
 func (n *node) pending(ctx context.Context) (*lnrpc.PendingChannelsResponse, error) {
 	return n.client.PendingChannels(ctx, &lnrpc.PendingChannelsRequest{})
-}
-
-// closeChannel asks lnd to close one channel and returns the closing txid
-// once it is broadcast. A cooperative close pays address; a force close
-// pays the node's own wallet after the channel delay.
-func (n *node) closeChannel(ctx context.Context, channelPoint, address string, force bool) (string, error) {
-	parts := strings.SplitN(channelPoint, ":", 2)
-	if len(parts) != 2 {
-		return "", fmt.Errorf("bad channel point %q", channelPoint)
-	}
-	index, err := strconv.ParseUint(parts[1], 10, 32)
-	if err != nil {
-		return "", err
-	}
-	// The peer is online for a cooperative close: it answers at once or
-	// not at all.
-	timeout := 15 * time.Second
-	if force {
-		timeout = 60 * time.Second
-	}
-	c, cancel := context.WithTimeout(ctx, timeout)
-	defer cancel()
-	req := &lnrpc.CloseChannelRequest{
-		ChannelPoint: &lnrpc.ChannelPoint{
-			FundingTxid: &lnrpc.ChannelPoint_FundingTxidStr{FundingTxidStr: parts[0]},
-			OutputIndex: uint32(index),
-		},
-		Force: force,
-	}
-	if !force {
-		req.DeliveryAddress = address
-	}
-	stream, err := n.client.CloseChannel(c, req)
-	if err != nil {
-		return "", err
-	}
-	update, err := stream.Recv()
-	if err != nil {
-		// The close may have gone out although the answer did not arrive
-		// in time; lnd then lists the channel as closing.
-		if txid := n.closingTxid(ctx, channelPoint); txid != "" {
-			return txid, nil
-		}
-		return "", err
-	}
-	var raw []byte
-	switch u := update.Update.(type) {
-	case *lnrpc.CloseStatusUpdate_ClosePending:
-		raw = u.ClosePending.Txid
-	case *lnrpc.CloseStatusUpdate_ChanClose:
-		raw = u.ChanClose.ClosingTxid
-	default:
-		return "", errors.New("unexpected close update")
-	}
-	h, err := chainhash.NewHash(raw)
-	if err != nil {
-		return "", err
-	}
-	return h.String(), nil
-}
-
-// closingTxid returns the closing transaction of a channel lnd lists as
-// closing, or "".
-func (n *node) closingTxid(ctx context.Context, channelPoint string) string {
-	pend, err := n.pending(ctx)
-	if err != nil {
-		return ""
-	}
-	for _, c := range pend.WaitingCloseChannels {
-		if c.Channel.ChannelPoint == channelPoint {
-			return c.ClosingTxid
-		}
-	}
-	for _, c := range pend.PendingForceClosingChannels {
-		if c.Channel.ChannelPoint == channelPoint {
-			return c.ClosingTxid
-		}
-	}
-	return ""
 }
 
 func (n *node) status(ctx context.Context, checks *channelChecks) (*Status, error) {

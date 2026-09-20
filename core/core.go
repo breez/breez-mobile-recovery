@@ -23,7 +23,6 @@ import (
 	"github.com/breez/breez/bindings"
 	"github.com/breez/breez/data"
 	"github.com/btcsuite/btcd/wire"
-	"github.com/lightningnetwork/lnd/lnrpc"
 	"google.golang.org/protobuf/proto"
 )
 
@@ -625,16 +624,6 @@ func (c *Core) WaitSynced(ctx context.Context, onProgress func(SyncProgress)) er
 	})
 }
 
-// WaitChannelsActive gives lnd up to timeout to reconnect to channel peers
-// so cooperative closes have a chance. It returns early once every channel
-// is active.
-func (c *Core) WaitChannelsActive(ctx context.Context, timeout time.Duration) {
-	if c.node == nil {
-		return
-	}
-	c.node.waitChannelsActive(ctx, timeout, c.progressf)
-}
-
 // Channel is an open channel of the restored node.
 type Channel struct {
 	ChannelPoint  string `json:"channelPoint"`
@@ -684,110 +673,6 @@ func (c *Core) Status(ctx context.Context) (*Status, error) {
 // ValidateAddress checks a bitcoin address for the configured network.
 func ValidateAddress(address string) error {
 	return bindings.ValidateAddress(address)
-}
-
-// ChannelCloseResult is the outcome of closing one channel.
-type ChannelCloseResult struct {
-	ChannelPoint string `json:"channelPoint"`
-	Status       string `json:"status"` // "closing", "force_closing", "skipped", "failed"
-	TxID         string `json:"txid"`
-	Error        string `json:"error"`
-}
-
-// CloseResult summarises a close run.
-type CloseResult struct {
-	Channels []ChannelCloseResult `json:"channels"`
-	Closed   int                  `json:"closed"`
-	Skipped  int                  `json:"skipped"`
-}
-
-// CloseChannels asks every channel peer for a cooperative close with the
-// funds paid straight to address. Channels whose peer is offline are
-// skipped, or force closed when force is set. It keeps the node running a
-// little so the closing transactions get broadcast.
-func (c *Core) CloseChannels(ctx context.Context, address string, force bool) (*CloseResult, error) {
-	if c.node == nil {
-		return nil, errors.New("node not started")
-	}
-	if err := bindings.ValidateAddress(address); err != nil {
-		return nil, fmt.Errorf("invalid address: %w", err)
-	}
-	if !c.checks.done() {
-		if _, err := c.CheckChannelsOnChain(ctx, nil); err != nil {
-			return nil, fmt.Errorf("could not check on chain which channels are still open, nothing was closed: %w", err)
-		}
-	}
-	all, err := c.node.openChannels(ctx)
-	if err != nil {
-		return nil, err
-	}
-	// Only channels the chain check confirmed are ever closed, one by one:
-	// closing a channel whose funding output is gone, or one this backup
-	// cannot sign for, broadcasts a transaction that can never be valid.
-	var chans []*lnrpc.Channel
-	for _, ch := range all {
-		switch v := c.checks.get(ch.ChannelPoint); v.verdict {
-		case verdictOpen:
-			chans = append(chans, ch)
-		case verdictSpent:
-			c.progressf("  %s closed on chain already, in transaction %s; nothing to close.", ch.ChannelPoint, v.spent.ClosingTxID)
-		case verdictForeign:
-			c.progressf("  %s belongs to another node; left alone.", ch.ChannelPoint)
-		default:
-			c.progressf("  %s is left alone: %s.", ch.ChannelPoint, v.reason)
-		}
-	}
-	if len(chans) == 0 {
-		return &CloseResult{}, nil
-	}
-	c.progressf("Closing %d channel(s) cooperatively, funds to %s...", len(chans), address)
-	result := &CloseResult{}
-	for _, ch := range chans {
-		if !ch.Active {
-			c.progressf("  %s: skipped, peer offline", ch.ChannelPoint)
-			result.Channels = append(result.Channels, ChannelCloseResult{ChannelPoint: ch.ChannelPoint, Status: "skipped"})
-			continue
-		}
-		txid, err := c.node.closeChannel(ctx, ch.ChannelPoint, address, false)
-		if err != nil {
-			c.progressf("  %s: failed: %v", ch.ChannelPoint, err)
-			result.Channels = append(result.Channels, ChannelCloseResult{ChannelPoint: ch.ChannelPoint, Status: "failed", Error: err.Error()})
-			continue
-		}
-		c.progressf("  %s: closing, tx %s", ch.ChannelPoint, txid)
-		result.Channels = append(result.Channels, ChannelCloseResult{ChannelPoint: ch.ChannelPoint, Status: "closing", TxID: txid})
-		result.Closed++
-	}
-	if force {
-		for i := range result.Channels {
-			r := &result.Channels[i]
-			if r.Status != "skipped" && r.Status != "failed" {
-				continue
-			}
-			txid, err := c.node.closeChannel(ctx, r.ChannelPoint, "", true)
-			if err != nil {
-				c.progressf("  %s: force close failed: %v", r.ChannelPoint, err)
-				r.Status, r.Error = "failed", err.Error()
-				continue
-			}
-			c.progressf("  %s: force closing, tx %s", r.ChannelPoint, txid)
-			r.Status, r.TxID, r.Error = "force_closing", txid, ""
-			result.Closed++
-		}
-	}
-	for _, r := range result.Channels {
-		if r.Status == "skipped" || r.Status == "failed" {
-			result.Skipped++
-		}
-	}
-	if result.Closed > 0 {
-		c.progressf("Keeping the node running so the closing transactions are broadcast...")
-		select {
-		case <-time.After(20 * time.Second):
-		case <-ctx.Done():
-		}
-	}
-	return result, nil
 }
 
 // SweepOption is one fee choice for the sweep transaction.
@@ -877,10 +762,17 @@ func (c *Core) BroadcastSweep(confTarget int) (string, error) {
 	return txid, nil
 }
 
-// Lncli runs an lncli command against the running node.
+// Lncli runs an lncli command against the running node. Commands that
+// close a channel are refused: the tool closes nothing, see CLAUDE.md.
 func (c *Core) Lncli(ctx context.Context, command string) (string, error) {
 	if c.node == nil {
 		return "", errors.New("node not started")
+	}
+	for _, word := range strings.Fields(command) {
+		switch strings.ToLower(word) {
+		case "closechannel", "closeallchannels", "abandonchannel":
+			return "", fmt.Errorf("%s is not available: a backup can hold an old channel state, and closing with it can lose the channel's funds", word)
+		}
 	}
 	return bindings.SendCommand(command)
 }

@@ -18,8 +18,6 @@
     zip: null,            // {path,name,needsPhrase}
     force: false,         // overwrite an existing restored wallet
     status: null,         // last wallet status
-    closeAddress: "",
-    closeForce: false,
     sweepPlan: null,
     sweepTarget: 6,
     lastTxid: "",
@@ -299,7 +297,7 @@
     }
   }
 
-  const stageOrder = ["start", "connecting", "headers", "rescan", "channels", "peers"];
+  const stageOrder = ["start", "connecting", "headers", "rescan", "channels"];
   function elapsed() {
     if (!ui.rescanStart) return "0:00";
     const s = Math.floor((Date.now() - ui.rescanStart) / 1000);
@@ -393,12 +391,11 @@
 
     const hasChannels = st.channels.length > 0;
     const hasOnchain = st.onchainConfirmed > 0;
-    $("#btn-withdraw").classList.toggle("hidden", !hasChannels);
     $("#btn-sweep").classList.toggle("hidden", !hasOnchain);
 
     let advice;
     if (hasChannels) {
-      advice = "Your funds sit in Lightning channels. Close them to move the money to a bitcoin address you control. Channels whose peer is online close within minutes.";
+      advice = "A channel is still open. Save the log and send it to Breez support at contact@breez.technology.";
     } else if (st.pending.length) {
       advice = "Channels are closing. Leave this window open, or come back later, until the funds show as ready to send. Then send the on-chain balance.";
     } else if (hasOnchain) {
@@ -586,63 +583,6 @@
     catch (e) { hint.textContent = "This is not a valid bitcoin address"; hint.className = "hint err"; input.classList.add("invalid"); return null; }
   }
 
-  // ---------------------------------------------------------------- close channels
-
-  async function doClose(force) {
-    const address = ui.closeAddress || await checkAddress("#close-address", "#close-address-hint");
-    if (!address) return;
-    ui.closeAddress = address;
-    ui.closeForce = force;
-    working("Closing channels", true);
-    setBusy(true);
-    try {
-      const res = await api.CloseChannels(address, force);
-      renderCloseResult(res, force);
-      show("closeresult");
-    } catch (e) {
-      if (isCancel(e)) { await refreshStatus(); return; }
-      show("withdraw");
-      showError(errMsg(e));
-    } finally { setBusy(false); }
-  }
-
-  function renderCloseResult(res, forced) {
-    const chans = res.channels || [];
-    const list = $("#closeresult-list");
-    list.innerHTML = "";
-    chans.forEach((c) => {
-      const item = el("div", "item static");
-      const main = el("div", "item-main");
-      let title, tag, cls;
-      switch (c.status) {
-        case "closing": title = "Closing cooperatively"; tag = "closing"; cls = "ok"; break;
-        case "force_closing": title = "Force closing, funds arrive after the delay"; tag = "force close"; cls = "warn"; break;
-        case "skipped": title = "Skipped, peer offline"; tag = "skipped"; cls = "warn"; break;
-        default: title = "Failed: " + (c.error || "unknown error"); tag = "failed"; cls = "err";
-      }
-      main.appendChild(el("div", "item-title", title));
-      main.appendChild(el("div", "item-sub", c.txid || c.channelPoint));
-      item.appendChild(main);
-      item.appendChild(el("span", "tag " + cls, tag));
-      list.appendChild(item);
-    });
-    const closed = res.closed || 0, skipped = res.skipped || 0;
-    if (!chans.length) {
-      $("#closeresult-title").textContent = "No open channels";
-      $("#closeresult-lead").textContent = "There was nothing to close. Check your funds for closes in progress or an on-chain balance.";
-    } else if (closed && !skipped) {
-      $("#closeresult-title").textContent = "Channels closing";
-      $("#closeresult-lead").textContent = "The closing transactions are broadcast. Cooperative closes confirm within about an hour and pay straight to " + ui.closeAddress + ". Force closes land in this app first and can be sent on once they mature.";
-    } else if (closed && skipped) {
-      $("#closeresult-title").textContent = "Some channels closing";
-      $("#closeresult-lead").textContent = closed + " channel" + (closed > 1 ? "s are" : " is") + " closing. " + skipped + " could not be closed cooperatively because the peer is offline. You can force close them; those funds become spendable after a delay of up to about five days.";
-    } else {
-      $("#closeresult-title").textContent = "Channels could not be closed";
-      $("#closeresult-lead").textContent = "No peer answered. You can force close the channels; the funds become spendable in this app after a delay of up to about five days, then send them on.";
-    }
-    $("#btn-force-skipped").classList.toggle("hidden", !(skipped > 0 && !forced));
-  }
-
   // ---------------------------------------------------------------- sweep
 
   function resetSweep() {
@@ -730,12 +670,9 @@
     "phrase-continue": phraseContinue,
     "refresh": refreshStatus,
     "go-history": openHistory,
-    "go-withdraw": () => { $("#close-address-hint").textContent = ""; ui.closeAddress = ""; show("withdraw"); $("#close-address").focus(); },
     "go-sweep": () => { resetSweep(); $("#sweep-address-hint").textContent = ""; show("sweep"); $("#sweep-address").focus(); },
     "back-wallet": () => { renderWallet(); show("wallet"); },
     "back-wallet-refresh": refreshStatus,
-    "do-close": () => { ui.closeAddress = ""; doClose($("#close-force").checked); },
-    "force-skipped": () => doClose(true),
     "prepare-sweep": prepareSweep,
     "broadcast-sweep": broadcastSweep,
     "copy-txid": () => api.CopyText(ui.lastTxid),
@@ -765,9 +702,7 @@
     $("#phrase-count").className = "hint";
   });
   $("#phrase").addEventListener("keydown", (ev) => { if (ev.key === "Enter") { ev.preventDefault(); phraseContinue(); } });
-  $("#close-address").addEventListener("keydown", (ev) => { if (ev.key === "Enter") actions["do-close"](); });
   $("#sweep-address").addEventListener("keydown", (ev) => { if (ev.key === "Enter" && !ui.sweepPlan) prepareSweep(); });
-  bindAddress("#close-address", "#close-address-hint");
   bindAddress("#sweep-address", "#sweep-address-hint");
 
   // ---------------------------------------------------------------- boot
