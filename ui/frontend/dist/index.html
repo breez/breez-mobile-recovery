@@ -47,12 +47,12 @@
         </div>
         <div id="welcome-existing" class="hidden">
           <h1>Continue your recovery</h1>
-          <p class="lead">A Breez app restored earlier is on this computer. Continue to sync it and move the funds, or start over with a different backup.</p>
+          <p class="lead">A Breez app restored earlier is on this computer. Continue to sync it and move the funds, or restore another backup.</p>
           <div class="summary">
             <div><span class="muted">Restored app folder</span><span class="mono" id="existing-node-path"></span></div>
           </div>
           <div class="actions">
-            <button class="btn btn-ghost" type="button" data-action="restore-other">Start over with a different backup</button>
+            <button class="btn btn-ghost" type="button" data-action="restore-other">Restore another backup</button>
             <button class="btn btn-primary btn-lg" type="button" data-action="continue-existing">Continue</button>
           </div>
         </div>
@@ -187,13 +187,14 @@
           <div class="stage" data-stage="connecting"><span class="dot"></span>Connecting to the bitcoin network</div>
           <div class="stage" data-stage="headers"><span class="dot"></span>Catching up with the bitcoin chain</div>
           <div class="stage" data-stage="rescan"><span class="dot"></span>Checking your channel and payment history</div>
+          <div class="stage" data-stage="channels"><span class="dot"></span>Checking your channels on the bitcoin chain</div>
           <div class="stage" data-stage="peers"><span class="dot"></span>Connecting to channel peers</div>
         </div>
         <p class="progress-line" id="sync-message"></p>
         <div class="live hidden" id="sync-live">
           <div><span class="muted">Elapsed</span><strong id="live-elapsed">0:00</strong></div>
-          <div><span class="muted">Transactions found</span><strong id="live-found">0</strong></div>
-          <div><span class="muted">History checked through</span><strong id="live-through">not yet</strong></div>
+          <div class="rescan-only"><span class="muted">Transactions found</span><strong id="live-found">0</strong></div>
+          <div class="rescan-only"><span class="muted">History checked through</span><strong id="live-through">not yet</strong></div>
           <div><span class="muted">Time left</span><strong id="live-remaining">estimating</strong></div>
         </div>
         <div class="actions">

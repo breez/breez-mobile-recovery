@@ -8,11 +8,13 @@ go 1.25.0
 require (
 	github.com/breez/breez v0.0.0-20260906202014-eade35430c1b
 	github.com/btcsuite/btcd v0.24.3-0.20240921052913-67b8efd3ba53
+	github.com/btcsuite/btcd/btcutil v1.1.5
 	github.com/btcsuite/btcd/chaincfg/chainhash v1.1.0
 	github.com/lightninglabs/neutrino v0.16.1-0.20240425105051-602843d34ffd
 	github.com/lightningnetwork/lnd v0.18.5-beta
 	github.com/wailsapp/wails/v2 v2.16.0
 	golang.org/x/oauth2 v0.14.0
+	google.golang.org/api v0.150.0
 	google.golang.org/grpc v1.59.0
 	google.golang.org/protobuf v1.33.0
 )
@@ -36,7 +38,6 @@ require (
 	github.com/breez/boltz v0.0.0-20250411100539-2f9ac32f077f // indirect
 	github.com/breez/lspd v0.0.0-20230630175015-34646d50a591 // indirect
 	github.com/btcsuite/btcd/btcec/v2 v2.3.4 // indirect
-	github.com/btcsuite/btcd/btcutil v1.1.5 // indirect
 	github.com/btcsuite/btcd/btcutil/psbt v1.1.8 // indirect
 	github.com/btcsuite/btclog v0.0.0-20170628155309-84c8d2346e9f // indirect
 	github.com/btcsuite/btcwallet v0.16.10-0.20241127094224-93c858b2ad63 // indirect
@@ -223,7 +224,6 @@ require (
 	golang.org/x/text v0.39.0 // indirect
 	golang.org/x/time v0.8.0 // indirect
 	golang.org/x/tools v0.47.0 // indirect
-	google.golang.org/api v0.150.0 // indirect
 	google.golang.org/appengine v1.6.7 // indirect
 	google.golang.org/genproto v0.0.0-20231016165738-49dd2c1f3d0b // indirect
 	google.golang.org/genproto/googleapis/api v0.0.0-20231016165738-49dd2c1f3d0b // indirect

@@ -26,11 +26,11 @@ func (c *Core) writeConfigs() error {
 			return fmt.Errorf("invalid %s: must not contain spaces, brackets or line breaks", name)
 		}
 	}
-	if err := os.MkdirAll(c.cfg.WorkDir, 0700); err != nil {
+	if err := os.MkdirAll(c.dir(), 0700); err != nil {
 		return err
 	}
-	breezConf := filepath.Join(c.cfg.WorkDir, "breez.conf")
-	lndConf := filepath.Join(c.cfg.WorkDir, "lnd.conf")
+	breezConf := filepath.Join(c.dir(), "breez.conf")
+	lndConf := filepath.Join(c.dir(), "lnd.conf")
 
 	jobPeer := ""
 	for _, p := range c.peers() {

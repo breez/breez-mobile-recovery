@@ -132,7 +132,7 @@
     $("#log-path").textContent = ui.state.workDir;
     $("#welcome-existing").classList.toggle("hidden", !ui.state.hasNode);
     $("#welcome-fresh").classList.toggle("hidden", ui.state.hasNode);
-    $("#existing-node-path").textContent = ui.state.workDir;
+    $("#existing-node-path").textContent = ui.state.nodeDir || ui.state.workDir;
   }
 
   async function applySettings() {
@@ -299,7 +299,7 @@
     }
   }
 
-  const stageOrder = ["start", "connecting", "headers", "rescan", "peers"];
+  const stageOrder = ["start", "connecting", "headers", "rescan", "channels", "peers"];
   function elapsed() {
     if (!ui.rescanStart) return "0:00";
     const s = Math.floor((Date.now() - ui.rescanStart) / 1000);
@@ -341,21 +341,26 @@
     $("#sync-fill").classList.toggle("indeterminate", unknown);
     $("#sync-fill").classList.toggle("shimmer", !unknown && p.stage !== "synced");
     $("#sync-percent").textContent = unknown ? "working" : (p.stage === "synced" ? "100%" : pct.toFixed(1) + "%");
+    // The two long stages show elapsed time and time left; each stage
+    // counts from its own start.
     const rescan = p.stage === "rescan";
-    $("#sync-live").classList.toggle("hidden", !rescan);
+    const live = rescan || p.stage === "channels";
+    if (ui.liveStage !== p.stage) { ui.liveStage = p.stage; ui.rescanStart = live ? Date.now() : 0; }
+    $("#sync-live").classList.toggle("hidden", !live);
+    $$("#sync-live .rescan-only").forEach((d) => d.classList.toggle("hidden", !rescan));
+    if (live) {
+      $("#live-elapsed").textContent = elapsed();
+      $("#live-remaining").textContent = remainingText(p.remaining);
+    }
     if (rescan) {
-      if (!ui.rescanStart) ui.rescanStart = Date.now();
       $("#sync-blocks").textContent = unknown ? "" : "about block " + p.height.toLocaleString("en-US") + " of " + p.target.toLocaleString("en-US");
       $("#live-found").textContent = String(p.found || 0);
       $("#live-through").textContent = p.throughTime ? new Date(p.throughTime * 1000).toLocaleDateString(undefined, { dateStyle: "medium" }) : "not yet";
-      $("#live-elapsed").textContent = elapsed();
-      $("#live-remaining").textContent = remainingText(p.remaining);
     } else {
-      ui.rescanStart = 0;
-      $("#sync-blocks").textContent = p.height ? "block " + p.height.toLocaleString("en-US") + " of about " + p.target.toLocaleString("en-US") : "";
+      $("#sync-blocks").textContent = p.height ? "block " + p.height.toLocaleString("en-US") + " of " + (p.stage === "channels" ? "" : "about ") + p.target.toLocaleString("en-US") : "";
     }
     $("#sync-message").textContent = p.message || "";
-    setStage(p.stage === "synced" ? "peers" : p.stage);
+    setStage(p.stage === "synced" ? "channels" : p.stage);
   }
 
   async function startSync() {
@@ -702,7 +707,13 @@
     "dismiss-error": clearError,
     "start": () => { ui.force = false; show("source"); },
     "continue-existing": () => startSync(),
-    "restore-other": () => { ui.force = true; show("source"); },
+    "restore-other": async () => {
+      // Each backup has a folder of its own, so nothing is overwritten. When
+      // the node already ran, the app restarts itself and opens on this step.
+      ui.force = false;
+      if (await api.RestoreOther()) { working("Restarting", false); return; }
+      show("source");
+    },
     "back-welcome": async () => { await refreshState(); show("welcome"); },
     "choose-workdir": async () => { const p = await api.ChooseWorkDir(); if (p) $("#workdir").value = p; },
     "apply-settings": applySettings,
@@ -786,7 +797,7 @@
     const existing = await api.GetLog();
     if (existing && existing.length) appendLog(existing);
     await refreshState();
-    show("welcome");
+    show(ui.state.restoreOther ? "source" : "welcome");
     if (ui.state.autoContinue) {
       // Relaunched by the app itself after preparing the node: give the
       // previous copy a moment to release the work folder, then carry on.

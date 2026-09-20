@@ -60,7 +60,9 @@ Usage:
 
 Commands:
   snapshots   List node backups in Google Drive (or iCloud with --icloud)
-  restore     Download (Drive, --icloud, or --zip file) a backup into the work dir
+  restore     Download (Drive, --icloud, or --zip file) a backup into a folder of its own
+  backups     List the backups restored on this computer
+  use         Continue with another restored backup: recovery use <name>
   status      Start the node, wait for chain sync and print balances and channels
   close       Cooperatively close all channels, sending funds to --address
   sweep       Send the whole on-chain wallet balance to --address
@@ -74,7 +76,7 @@ Global flags:
 }
 
 func main() {
-	flag.StringVar(&cfg.WorkDir, "workdir", cfg.WorkDir, "directory holding the restored node")
+	flag.StringVar(&cfg.WorkDir, "workdir", cfg.WorkDir, "work folder; every restored backup gets a folder of its own under it")
 	flag.StringVar(&cfg.Network, "network", cfg.Network, "bitcoin network (mainnet, testnet, simnet)")
 	flag.StringVar(&cfg.BreezServer, "breezserver", cfg.BreezServer, "Breez server address used by the node for LSP services")
 	flag.StringVar(&cfg.BootstrapURL, "bootstrap", cfg.BootstrapURL, "Breez bootstrap URL")
@@ -103,6 +105,20 @@ func main() {
 		err = cmdSnapshots(ctx, c, args)
 	case "restore":
 		err = cmdRestore(ctx, c, args)
+	case "backups":
+		for _, b := range c.RestoredBackups() {
+			mark := " "
+			if b.Current {
+				mark = "*"
+			}
+			fmt.Fprintf(out, "%s %s  %s\n", mark, b.Name, b.Dir)
+		}
+	case "use":
+		if len(args) != 1 {
+			err = errors.New("usage: recovery use <name from 'recovery backups'>")
+			break
+		}
+		err = c.UseBackup(args[0])
 	case "status":
 		err = cmdStatus(ctx, c, args)
 	case "close":
@@ -172,12 +188,8 @@ func cmdRestore(ctx context.Context, c *core.Core, args []string) error {
 	zipPath := fs.String("zip", "", "restore from a local backup zip instead of the cloud")
 	icloud := fs.Bool("icloud", false, "restore from iCloud instead of Google Drive")
 	mnemonic := fs.String("mnemonic", "", "backup phrase (12 or 24 words); prompted if omitted and needed")
-	force := fs.Bool("force", false, "overwrite an existing restored node in the work dir")
+	force := fs.Bool("force", false, "restore a backup again that is already restored here; the earlier copy is moved aside")
 	fs.Parse(args)
-
-	if c.HasRestoredNode() && !*force {
-		return fmt.Errorf("%s already holds a restored node; pass --force to overwrite it", cfg.WorkDir)
-	}
 
 	var err error
 	switch {
@@ -213,6 +225,9 @@ func cmdRestore(ctx context.Context, c *core.Core, args []string) error {
 			return perr
 		}
 		err = c.GoogleRestore(ctx, snap.NodeID, phraseFor(snap, *mnemonic), *force)
+	}
+	if errors.Is(err, core.ErrNodeExists) {
+		return fmt.Errorf("%w; 'recovery use <name>' continues with it, --force restores it again", err)
 	}
 	if err != nil {
 		return err
@@ -263,7 +278,9 @@ func startAndSync(ctx context.Context, c *core.Core) error {
 	if err := c.WaitSynced(ctx, func(p core.SyncProgress) { fmt.Fprintln(out, p.Message) }); err != nil {
 		return err
 	}
-	_, err := c.CheckChannelsOnChain(ctx)
+	_, err := c.CheckChannelsOnChain(ctx, func(p core.SyncProgress) {
+		fmt.Fprintf(out, "%s, block %d of %d\n", p.Message, p.Height, p.Target)
+	})
 	return err
 }
 

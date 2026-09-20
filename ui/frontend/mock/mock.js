@@ -31,7 +31,7 @@
   setInterval(() => log("2026-09-16 20:10:" + String(logn++ % 60).padStart(2, "0") + ".123 [INF] DAEM: Sync to chain interval Synced=false BlockHeight=" + (967290 + logn)), 700);
   const progress = (m) => { emit("progress", m); log(new Date().toLocaleTimeString() + "  [recovery] " + m); };
   window.go = { main: { App: {
-    GetState: async () => ({ version: "0.1.0", os: "linux", workDir: "/home/roys/.breez-recovery", peers: "", hasNode, logPath: "", googleConfigured: true }),
+    GetState: async () => ({ version: "0.1.0", os: "linux", workDir: "/home/roys/.breez-recovery", nodeDir: hasNode ? "/home/roys/.breez-recovery/backups/02e66bcb1e3c97de679c0d5b2f831ac913e53acdc99542ed839c17b1079df489ea" : "", restoreOther: false, peers: "", hasNode, logPath: "", googleConfigured: true }),
     ApplySettings: async () => ({}),
     GetLog: async () => ["20:07:01  [recovery] Breez Recovery 0.1.0 on linux/amd64", "20:07:01  [recovery] Work dir: /home/roys/.breez-recovery"],
     ListGoogle: async () => {
@@ -59,7 +59,11 @@
         emit("sync", { stage, height, target, peers, percent: pct !== undefined ? pct : (stage === "synced" ? 100 : Math.min(99, height / target * 100)), message: msg || ("Catching up with the bitcoin chain, block " + height + " of about " + target), found: found || 0, throughTime: through || 0 });
         await sleep(slow === "sync" && height === 700000 ? 600000 : slow === "rescan1" && height === 557139 ? 600000 : slow === "rescan2" && height === 612400 ? 600000 : 600);
       }
-      progress("Connecting to channel peers..."); await sleep(500);
+      for (const height of [758000, 860000, 967000]) {
+        emit("sync", { stage: "channels", height, target: 967310, peers: 8, percent: (height - 758000) / (967310 - 758000) * 100, message: "Making sure your channels are still open", found: 0, throughTime: 0, remaining: height === 758000 ? -1 : Math.round((967310 - height) / 550) });
+        await sleep(slow === "channels" && height === 860000 ? 600000 : 600);
+      }
+      emit("sync", { stage: "peers", height: 0, target: 0, peers: 8, percent: -1, message: "Connecting to channel peers...", found: 0, throughTime: 0, remaining: -1 }); await sleep(500);
       return status;
     },
     GetStatus: async () => status,
@@ -91,8 +95,8 @@
     },
     PrepareSweep: async (addr) => { await sleep(600); return { address: addr, amount: 1581900, options: [{ confTarget: 2, fee: 1840, txid: "a" }, { confTarget: 6, fee: 920, txid: "b" }, { confTarget: 25, fee: 410, txid: "c" }] }; },
     BroadcastSweep: async () => { await sleep(600); return "5f4e3d2c1b0a9f8e7d6c5b4a3f2e1d0c9b8a7f6e5d4c3b2a1f0e9d8c7b6a5f4e"; },
+    RestoreOther: async () => false,
     Cancel: async () => {}, CopyText: async () => {}, OpenURL: async () => {},
-    CheckChannelsOnChain: async () => [],
     SaveHistory: async () => "/home/roys/breez-history-2026-09-17.csv",
     SaveLog: async () => "/home/roys/breez-recovery-2026-09-16.log", CopyLog: async () => {}, OpenWorkDir: async () => {},
     ChooseWorkDir: async () => "/home/roys/wallet", ForgetSignIns: async () => {},

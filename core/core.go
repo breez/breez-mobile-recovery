@@ -9,10 +9,8 @@ package core
 import (
 	"bufio"
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
-	"github.com/btcsuite/btcd/wire"
 	"io"
 	"net"
 	"os"
@@ -24,6 +22,8 @@ import (
 	"github.com/breez/breez/backup"
 	"github.com/breez/breez/bindings"
 	"github.com/breez/breez/data"
+	"github.com/btcsuite/btcd/wire"
+	"github.com/lightningnetwork/lnd/lnrpc"
 	"google.golang.org/protobuf/proto"
 )
 
@@ -133,7 +133,7 @@ type Core struct {
 	initialized bool
 	node        *node
 
-	gsnaps  []backup.SnapshotInfo
+	gsnaps  []Snapshot
 	icloud  *icloudClient
 	records map[string]ckRecord
 	sweep   *sweepPlan
@@ -144,15 +144,23 @@ type Core struct {
 	// node is started by a fresh process.
 	restored bool
 
-	// spent holds channels that lnd lists as open although the chain says
-	// their funding output is gone. See CheckChannelsOnChain.
-	spent spentChannels
+	// nodeDir is the folder of the backup in use, see dirs.go.
+	nodeDir   string
+	layoutErr error
+
+	// checks holds the chain check's verdict on every channel lnd lists
+	// as open. See CheckChannelsOnChain.
+	checks channelChecks
 }
 
 // New creates a session. It also captures the library's stdout logging into
 // the reporter, once per process.
 func New(cfg Config, rep Reporter) *Core {
 	c := &Core{cfg: cfg, rep: rep}
+	if err := c.loadLayout(); err != nil {
+		// Reported by every operation that needs the folder.
+		c.layoutErr = err
+	}
 	setNodeLogSink(func(line string) {
 		if trackRescan(line) {
 			return // progress only, not worth a log line
@@ -167,7 +175,10 @@ func (c *Core) Config() Config { return c.cfg }
 
 // LogPath is the lnd log file of the restored node.
 func (c *Core) LogPath() string {
-	return filepath.Join(c.cfg.WorkDir, "logs", "bitcoin", c.cfg.Network, "lnd.log")
+	if c.dir() == "" {
+		return ""
+	}
+	return filepath.Join(c.dir(), "logs", "bitcoin", c.cfg.Network, "lnd.log")
 }
 
 func (c *Core) progressf(format string, args ...interface{}) {
@@ -213,47 +224,14 @@ func setNodeLogSink(sink func(string)) {
 
 // ---- restore state -------------------------------------------------------
 
-// HasRestoredNode reports whether the work dir already holds a wallet.
+// HasRestoredNode reports whether a restored backup is selected.
 func (c *Core) HasRestoredNode() bool {
-	_, err := os.Stat(filepath.Join(c.cfg.WorkDir, "data", "chain", "bitcoin", c.cfg.Network, "wallet.db"))
-	return err == nil
+	return hasNode(c.dir(), c.cfg.Network)
 }
 
-// ErrNodeExists is returned by the restore functions when the work dir
-// already holds a node and force is false.
-var ErrNodeExists = errors.New("the work dir already holds a restored wallet")
-
-func (c *Core) guardRestore(force bool) error {
-	if c.HasRestoredNode() && !force {
-		return ErrNodeExists
-	}
-	if c.node != nil {
-		c.progressf("Stopping the running node before restoring over it...")
-		c.Stop()
-	}
-	if err := os.MkdirAll(c.cfg.WorkDir, 0700); err != nil {
-		return err
-	}
-	// Starting over: the markers belong to the previous restore. Without
-	// this the fresh wallet would skip the address look-ahead and miss
-	// funds received after the backup. The backup itself replaces
-	// wallet.db, channel.db and breez.db; chain headers are kept.
-	for _, name := range []string{addressesExtendedFile, forceRescanFile} {
-		if err := os.Remove(filepath.Join(c.cfg.WorkDir, name)); err != nil && !os.IsNotExist(err) {
-			return err
-		}
-	}
-	// lnd's channel backup file is encrypted with the seed of the node
-	// that wrote it. Left from a previous restore of a different node, it
-	// makes lnd refuse to start ("unable to extract on disk encrypted
-	// SCB"). The restore brings the node's own channel state, so the file
-	// is not needed; lnd writes a new one.
-	scb := filepath.Join(c.cfg.WorkDir, "data", "chain", "bitcoin", c.cfg.Network, "channel.backup")
-	if err := os.Remove(scb); err != nil && !os.IsNotExist(err) {
-		return err
-	}
-	return nil
-}
+// ErrNodeExists is returned by the restore functions when this backup is
+// already restored on this computer and force is false.
+var ErrNodeExists = errors.New("this backup is already restored on this computer")
 
 // ValidateMnemonic checks a backup phrase and returns the encryption type it
 // corresponds to ("Mnemonics" for 24 words, "Mnemonics12" for 12).
@@ -334,22 +312,14 @@ func (c *Core) GoogleSnapshots(ctx context.Context) ([]Snapshot, error) {
 		return nil, err
 	}
 	c.progressf("Signed in to Google. Looking for Breez backups...")
-	if err := c.initLibrary(newServices("gdrive", auth)); err != nil {
-		return nil, err
-	}
-	res, err := bindings.AvailableSnapshots()
+	out, err := listDriveSnapshots(ctx, auth)
 	if err != nil {
-		if err.Error() == "empty" {
-			return nil, errors.New("no Breez backups found in this Google account")
-		}
 		return nil, err
 	}
-	var snaps []backup.SnapshotInfo
-	if err := json.Unmarshal([]byte(res), &snaps); err != nil {
-		return nil, err
+	if len(out) == 0 {
+		return nil, errors.New("no Breez backups found in this Google account")
 	}
-	c.gsnaps = snaps
-	out := convertSnapshots(snaps)
+	c.gsnaps = out
 	c.progressf("Found %d backup(s) in Google Drive.", len(out))
 	return out, nil
 }
@@ -358,12 +328,12 @@ func (c *Core) GoogleSnapshots(ctx context.Context) ([]Snapshot, error) {
 // node files in the work dir. Drive marks the snapshot as restored by this
 // machine, exactly as a new phone would.
 func (c *Core) GoogleRestore(ctx context.Context, nodeID, mnemonic string, force bool) error {
-	if c.gsnaps == nil || c.svc == nil || c.svc.providerName != "gdrive" {
+	if c.gsnaps == nil {
 		if _, err := c.GoogleSnapshots(ctx); err != nil {
 			return err
 		}
 	}
-	snap, err := findSnapshot(convertSnapshots(c.gsnaps), nodeID)
+	snap, err := findSnapshot(c.gsnaps, nodeID)
 	if err != nil {
 		return err
 	}
@@ -371,14 +341,24 @@ func (c *Core) GoogleRestore(ctx context.Context, nodeID, mnemonic string, force
 	if err != nil {
 		return err
 	}
-	if err := c.guardRestore(force); err != nil {
+	if err := c.prepareBackupDir(snap.NodeID, force); err != nil {
+		return err
+	}
+	// The library downloads, decrypts and places the files. It is
+	// initialised here, on this backup's own folder, and not before: its
+	// databases are process-wide and stay bound to the first folder.
+	auth, err := c.newGoogleAuth(ctx)
+	if err != nil {
+		return err
+	}
+	if err := c.initLibrary(newServices("gdrive", auth)); err != nil {
 		return err
 	}
 	c.progressf("Downloading backup of node %s (from %s)...", short(snap.NodeID), snap.ModifiedTime.Local().Format("2006-01-02 15:04"))
 	if err := bindings.RestoreBackup(snap.NodeID, key); err != nil {
 		return fmt.Errorf("restore failed: %w (wrong backup phrase?)", err)
 	}
-	c.progressf("Backup restored into %s.", c.cfg.WorkDir)
+	c.progressf("Backup restored into %s.", c.dir())
 	c.restored = true
 	return nil
 }
@@ -423,11 +403,11 @@ func (c *Core) ICloudRestore(ctx context.Context, nodeID, mnemonic string, force
 	if err != nil {
 		return err
 	}
-	if err := c.guardRestore(force); err != nil {
+	if err := c.prepareBackupDir(snap.NodeID, force); err != nil {
 		return err
 	}
 	c.progressf("Downloading backup of node %s (from %s) from iCloud...", short(snap.NodeID), snap.ModifiedTime.Local().Format("2006-01-02 15:04"))
-	paths, err := c.icloud.download(c.cfg.WorkDir, c.records[snap.NodeID])
+	paths, err := c.icloud.download(c.dir(), c.records[snap.NodeID])
 	if err != nil {
 		return err
 	}
@@ -448,7 +428,7 @@ func (c *Core) ICloudRestore(ctx context.Context, nodeID, mnemonic string, force
 	if err != nil {
 		return err
 	}
-	c.progressf("Backup restored into %s.", c.cfg.WorkDir)
+	c.progressf("Backup restored into %s.", c.dir())
 	c.restored = true
 	return nil
 }
@@ -471,7 +451,11 @@ func (c *Core) ZipRestore(zipPath, mnemonic string, force bool) error {
 			return err
 		}
 	}
-	if err := c.guardRestore(force); err != nil {
+	name, err := zipBackupName(zipPath)
+	if err != nil {
+		return err
+	}
+	if err := c.prepareBackupDir(name, force); err != nil {
 		return err
 	}
 	if err := c.writeConfigs(); err != nil {
@@ -481,7 +465,7 @@ func (c *Core) ZipRestore(zipPath, mnemonic string, force bool) error {
 	if err := c.restoreFromZip(zipPath, key); err != nil {
 		return err
 	}
-	c.progressf("Backup restored into %s.", c.cfg.WorkDir)
+	c.progressf("Backup restored into %s.", c.dir())
 	c.restored = true
 	return nil
 }
@@ -491,17 +475,26 @@ func (c *Core) ZipRestore(zipPath, mnemonic string, force bool) error {
 // initLibrary prepares the breez app without starting lnd. A second call
 // with a different provider re-initialises.
 func (c *Core) initLibrary(svc *services) error {
+	if c.dir() == "" {
+		return errors.New("no backup selected")
+	}
+	if boundLibDir != "" && boundLibDir != c.dir() {
+		return ErrLibraryBound
+	}
 	if c.initialized && c.svc != nil && svc.providerName == c.svc.providerName {
 		return nil
 	}
 	if err := c.writeConfigs(); err != nil {
 		return err
 	}
-	tmp := filepath.Join(c.cfg.WorkDir, "tmp")
+	tmp := filepath.Join(c.dir(), "tmp")
 	if err := os.MkdirAll(tmp, 0700); err != nil {
 		return err
 	}
-	if err := bindings.Init(tmp, c.cfg.WorkDir, svc); err != nil {
+	// Bound from here on, even when Init fails half way: the library may
+	// already hold this folder's databases.
+	boundLibDir = c.dir()
+	if err := bindings.Init(tmp, c.dir(), svc); err != nil {
 		return err
 	}
 	c.svc = svc
@@ -515,8 +508,11 @@ func (c *Core) StartNode(ctx context.Context) error {
 	if c.node != nil {
 		return nil
 	}
+	if c.layoutErr != nil {
+		return c.layoutErr
+	}
 	if !c.HasRestoredNode() {
-		return fmt.Errorf("no restored wallet in %s", c.cfg.WorkDir)
+		return fmt.Errorf("no restored backup in %s", c.cfg.WorkDir)
 	}
 	if c.restored {
 		c.progressf("Backup restored; the app restarts to open it...")
@@ -533,7 +529,9 @@ func (c *Core) StartNode(ctx context.Context) error {
 		return err
 	}
 	c.progressf("Starting the node...")
-	n, err := startNode(ctx, c.cfg, svc)
+	nodeCfg := c.cfg
+	nodeCfg.WorkDir = c.dir()
+	n, err := startNode(ctx, nodeCfg, svc)
 	if err != nil {
 		return err
 	}
@@ -543,7 +541,7 @@ func (c *Core) StartNode(ctx context.Context) error {
 	// First start after a restore: derive the address look-ahead, then
 	// make the wallet check its history again from the start so the new
 	// addresses are covered. Marked so it happens once per restore.
-	marker := filepath.Join(c.cfg.WorkDir, addressesExtendedFile)
+	marker := filepath.Join(c.dir(), addressesExtendedFile)
 	if _, err := os.Stat(marker); err == nil {
 		return nil
 	}
@@ -554,7 +552,7 @@ func (c *Core) StartNode(ctx context.Context) error {
 	if err := os.WriteFile(marker, []byte(time.Now().Format(time.RFC3339)+"\n"), 0600); err != nil {
 		return err
 	}
-	if err := os.WriteFile(filepath.Join(c.cfg.WorkDir, forceRescanFile), nil, 0600); err != nil {
+	if err := os.WriteFile(filepath.Join(c.dir(), forceRescanFile), nil, 0600); err != nil {
 		return err
 	}
 	// The library cannot be re-initialised in-process after a stop (it
@@ -680,7 +678,7 @@ func (c *Core) Status(ctx context.Context) (*Status, error) {
 	if c.node == nil {
 		return nil, errors.New("node not started")
 	}
-	return c.node.status(ctx, &c.spent)
+	return c.node.status(ctx, &c.checks)
 }
 
 // ValidateAddress checks a bitcoin address for the configured network.
@@ -714,48 +712,51 @@ func (c *Core) CloseChannels(ctx context.Context, address string, force bool) (*
 	if err := bindings.ValidateAddress(address); err != nil {
 		return nil, fmt.Errorf("invalid address: %w", err)
 	}
-	if !c.spent.done() {
-		if _, err := c.CheckChannelsOnChain(ctx); err != nil {
+	if !c.checks.done() {
+		if _, err := c.CheckChannelsOnChain(ctx, nil); err != nil {
 			return nil, fmt.Errorf("could not check on chain which channels are still open, nothing was closed: %w", err)
 		}
 	}
-	chans, err := c.node.openChannels(ctx)
+	all, err := c.node.openChannels(ctx)
 	if err != nil {
 		return nil, err
 	}
-	chans, gone := c.liveChannels(chans)
-	for _, g := range gone {
-		c.progressf("  %s closed on chain already, in transaction %s; nothing to close.", g.ChannelPoint, g.ClosingTxID)
+	// Only channels the chain check confirmed are ever closed, one by one:
+	// closing a channel whose funding output is gone, or one this backup
+	// cannot sign for, broadcasts a transaction that can never be valid.
+	var chans []*lnrpc.Channel
+	for _, ch := range all {
+		switch v := c.checks.get(ch.ChannelPoint); v.verdict {
+		case verdictOpen:
+			chans = append(chans, ch)
+		case verdictSpent:
+			c.progressf("  %s closed on chain already, in transaction %s; nothing to close.", ch.ChannelPoint, v.spent.ClosingTxID)
+		case verdictForeign:
+			c.progressf("  %s belongs to another node; left alone.", ch.ChannelPoint)
+		default:
+			c.progressf("  %s is left alone: %s.", ch.ChannelPoint, v.reason)
+		}
 	}
 	if len(chans) == 0 {
 		return &CloseResult{}, nil
 	}
 	c.progressf("Closing %d channel(s) cooperatively, funds to %s...", len(chans), address)
-	res, err := bindings.CloseChannels(address)
-	if err != nil {
-		return nil, fmt.Errorf("close channels: %w", err)
-	}
-	var reply data.CloseChannelsReply
-	if err := proto.Unmarshal(res, &reply); err != nil {
-		return nil, err
-	}
 	result := &CloseResult{}
-	var inactive []string
-	for _, ch := range reply.Channels {
-		switch {
-		case ch.IsSkipped:
+	for _, ch := range chans {
+		if !ch.Active {
 			c.progressf("  %s: skipped, peer offline", ch.ChannelPoint)
 			result.Channels = append(result.Channels, ChannelCloseResult{ChannelPoint: ch.ChannelPoint, Status: "skipped"})
-			inactive = append(inactive, ch.ChannelPoint)
-		case ch.FailErr != "":
-			c.progressf("  %s: failed: %s", ch.ChannelPoint, ch.FailErr)
-			result.Channels = append(result.Channels, ChannelCloseResult{ChannelPoint: ch.ChannelPoint, Status: "failed", Error: ch.FailErr})
-			inactive = append(inactive, ch.ChannelPoint)
-		default:
-			c.progressf("  %s: closing, tx %s", ch.ChannelPoint, ch.ClosingTxid)
-			result.Channels = append(result.Channels, ChannelCloseResult{ChannelPoint: ch.ChannelPoint, Status: "closing", TxID: ch.ClosingTxid})
-			result.Closed++
+			continue
 		}
+		txid, err := c.node.closeChannel(ctx, ch.ChannelPoint, address, false)
+		if err != nil {
+			c.progressf("  %s: failed: %v", ch.ChannelPoint, err)
+			result.Channels = append(result.Channels, ChannelCloseResult{ChannelPoint: ch.ChannelPoint, Status: "failed", Error: err.Error()})
+			continue
+		}
+		c.progressf("  %s: closing, tx %s", ch.ChannelPoint, txid)
+		result.Channels = append(result.Channels, ChannelCloseResult{ChannelPoint: ch.ChannelPoint, Status: "closing", TxID: txid})
+		result.Closed++
 	}
 	if force {
 		for i := range result.Channels {
@@ -763,7 +764,7 @@ func (c *Core) CloseChannels(ctx context.Context, address string, force bool) (*
 			if r.Status != "skipped" && r.Status != "failed" {
 				continue
 			}
-			txid, err := c.node.forceClose(ctx, r.ChannelPoint)
+			txid, err := c.node.closeChannel(ctx, r.ChannelPoint, "", true)
 			if err != nil {
 				c.progressf("  %s: force close failed: %v", r.ChannelPoint, err)
 				r.Status, r.Error = "failed", err.Error()

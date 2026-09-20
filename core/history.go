@@ -168,7 +168,7 @@ func (n *node) walkLnd(ctx context.Context, onInvoice func(*lnrpc.Invoice), onPa
 // below the dust limit. Channels closed with HTLCs or time locks are left
 // out, their outputs are paid by other transactions.
 func (c *Core) closeLeftovers(closed []*lnrpc.ChannelCloseSummary) (map[string]int64, int, error) {
-	db, release, err := channeldbservice.Get(c.cfg.WorkDir)
+	db, release, err := channeldbservice.Get(c.dir())
 	if err != nil {
 		return nil, 0, fmt.Errorf("open the channel database: %w", err)
 	}
@@ -320,7 +320,7 @@ func (c *Core) History(ctx context.Context) (*History, error) {
 		h.Warnings = append(h.Warnings, "Channels still closing could not be listed: "+err.Error())
 		pend = &lnrpc.PendingChannelsResponse{}
 	}
-	st, err := c.node.status(cctx, &c.spent)
+	st, err := c.node.status(cctx, &c.checks)
 	if err != nil {
 		return nil, err
 	}
