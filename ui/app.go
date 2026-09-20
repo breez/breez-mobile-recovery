@@ -96,7 +96,11 @@ type reporter struct{ app *App }
 
 func (r *reporter) Progress(msg string) {
 	r.app.log.tool(msg)
-	wruntime.EventsEmit(r.app.ctx, "progress", msg)
+	// The core can report before the window exists (it tidies the work
+	// folder when it is created); the log keeps the line.
+	if r.app.ctx != nil {
+		wruntime.EventsEmit(r.app.ctx, "progress", msg)
+	}
 }
 
 func (r *reporter) NodeLog(line string) { r.app.log.node(line) }
@@ -234,8 +238,10 @@ type State struct {
 	Version          string `json:"version"`
 	OS               string `json:"os"`
 	WorkDir          string `json:"workDir"`
+	NodeDir          string `json:"nodeDir"` // folder of the backup in use
 	Peers            string `json:"peers"`
 	HasNode          bool   `json:"hasNode"`
+	RestoreOther     bool   `json:"restoreOther"` // set after a self-restart: go straight to choosing a backup
 	AutoContinue     bool   `json:"autoContinue"` // set after a self-restart: go straight to sync
 	LogPath          string `json:"logPath"`
 	GoogleConfigured bool   `json:"googleConfigured"`
@@ -249,9 +255,11 @@ func (a *App) GetState() State {
 		Version:          version,
 		OS:               runtime.GOOS,
 		WorkDir:          cfg.WorkDir,
+		NodeDir:          c.NodeDir(),
 		Peers:            cfg.Peers,
 		HasNode:          c.HasRestoredNode(),
-		AutoContinue:     os.Getenv("BREEZ_RECOVERY_AUTOCONTINUE") == "1" && c.HasRestoredNode(),
+		RestoreOther:     os.Getenv(relaunchEnv) == "restore-other",
+		AutoContinue:     os.Getenv(relaunchEnv) == "continue" && c.HasRestoredNode(),
 		LogPath:          c.LogPath(),
 		GoogleConfigured: cfg.GoogleClientID != "",
 	}
@@ -370,10 +378,38 @@ type RestoreRequest struct {
 	Force   bool   `json:"force"`
 }
 
-// Restore downloads and places the backup in the work dir.
+// Restore downloads and places the backup in a folder of its own. A backup
+// that is already restored on this computer is not downloaded again unless
+// the user asks for it.
 func (a *App) Restore(req RestoreRequest) error {
 	return a.run("restore from "+req.Source, func(ctx context.Context) error {
 		c := a.c()
+		name, err := core.BackupName(req.Source, req.NodeID, req.ZipPath)
+		if err != nil {
+			return err
+		}
+		if c.IsRestored(name) && !req.Force {
+			// Linux shows its own Yes/No buttons whatever labels are
+			// passed, so the question is a yes/no one.
+			answer, err := wruntime.MessageDialog(a.ctx, wruntime.MessageDialogOptions{
+				Type:          wruntime.QuestionDialog,
+				Title:         "Already restored",
+				Message:       "This backup is already restored on this computer.\n\nContinue with it? No downloads it again; the earlier copy is kept in its own folder.",
+				Buttons:       []string{"Yes", "No"},
+				DefaultButton: "Yes",
+			})
+			if err != nil {
+				return err
+			}
+			switch answer {
+			case "Yes", "Ok":
+				return c.UseBackup(name)
+			case "No":
+				req.Force = true
+			default:
+				return errors.New("restore cancelled")
+			}
+		}
 		switch req.Source {
 		case "google":
 			return c.GoogleRestore(ctx, req.NodeID, req.Phrase, req.Force)
@@ -386,6 +422,27 @@ func (a *App) Restore(req RestoreRequest) error {
 	})
 }
 
+// RestoreOther prepares for restoring a different backup. The breez
+// library stays bound to the first backup folder it ran on, so when it
+// already runs in this process the app starts again and opens on the
+// backup sources. It reports whether it is restarting.
+func (a *App) RestoreOther() (bool, error) {
+	c := a.c()
+	if !c.LibraryBound() {
+		return false, nil
+	}
+	if !a.opMu.TryLock() {
+		return false, errBusy
+	}
+	defer a.opMu.Unlock()
+	a.log.tool("stopping the node to restore a different backup")
+	if !c.StopWithin(20 * time.Second) {
+		a.log.tool("the node did not stop cleanly; the program exits and starts again")
+	}
+	a.relaunch("restore-other")
+	return true, nil
+}
+
 // StartAndSync starts the node, waits for chain sync (emitting "sync"
 // events) and returns the wallet status.
 func (a *App) StartAndSync() (*core.Status, error) {
@@ -394,7 +451,7 @@ func (a *App) StartAndSync() (*core.Status, error) {
 		c := a.c()
 		if err := c.StartNode(ctx); err != nil {
 			if errors.Is(err, core.ErrRestartRequired) {
-				a.relaunch()
+				a.relaunch("continue")
 				return err
 			}
 			return err
@@ -409,10 +466,12 @@ func (a *App) StartAndSync() (*core.Status, error) {
 		// Before anything is shown as spendable, make sure the chain agrees
 		// that the channels are open. A backup taken before a channel
 		// closed still lists it.
-		if _, err := c.CheckChannelsOnChain(ctx); err != nil {
+		if _, err := c.CheckChannelsOnChain(ctx, func(p core.SyncProgress) {
+			wruntime.EventsEmit(a.ctx, "sync", p)
+		}); err != nil {
 			return err
 		}
-		wruntime.EventsEmit(a.ctx, "progress", "Connecting to channel peers...")
+		wruntime.EventsEmit(a.ctx, "sync", core.SyncProgress{Stage: "peers", Percent: -1, Remaining: -1, Message: "Connecting to channel peers..."})
 		c.WaitChannelsActive(ctx, 30*time.Second)
 		st, err = c.Status(ctx)
 		return err
@@ -420,16 +479,26 @@ func (a *App) StartAndSync() (*core.Status, error) {
 	return st, err
 }
 
-// relaunch starts a fresh copy of this program that continues the sync
-// on its own, then quits this one. Used when the node needs a restart.
-func (a *App) relaunch() {
+// relaunchEnv tells a copy of the program started by relaunch what to do
+// first: "continue" the sync, or open on the backup sources
+// ("restore-other").
+const relaunchEnv = "BREEZ_RECOVERY_RELAUNCH"
+
+// relaunch starts a fresh copy of this program, then quits this one. Used
+// when the node or the library needs a program restart.
+func (a *App) relaunch(then string) {
 	exe, err := os.Executable()
 	if err != nil {
 		a.log.tool("relaunch: " + err.Error())
 		return
 	}
 	cmd := exec.Command(exe)
-	cmd.Env = append(os.Environ(), "BREEZ_RECOVERY_AUTOCONTINUE=1")
+	for _, kv := range os.Environ() {
+		if !strings.HasPrefix(kv, relaunchEnv+"=") {
+			cmd.Env = append(cmd.Env, kv)
+		}
+	}
+	cmd.Env = append(cmd.Env, relaunchEnv+"="+then)
 	if err := cmd.Start(); err != nil {
 		a.log.tool("relaunch: " + err.Error())
 		return
@@ -468,18 +537,6 @@ func (a *App) GetHistory() (*core.History, error) {
 		a.historyMu.Unlock()
 	}
 	return h, err
-}
-
-// CheckChannelsOnChain verifies open channels against the chain. The sync
-// path calls it; exposed so the frontend can re-check.
-func (a *App) CheckChannelsOnChain() ([]core.SpentChannel, error) {
-	var out []core.SpentChannel
-	err := a.run("check channels on chain", func(ctx context.Context) error {
-		var err error
-		out, err = a.c().CheckChannelsOnChain(ctx)
-		return err
-	})
-	return out, err
 }
 
 // SaveHistory asks where to save the history shown on screen and writes it

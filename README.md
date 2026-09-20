@@ -69,8 +69,9 @@ Update the table in the same pull request as any fix the run produced.
 
 One window, one step at a time:
 
-1. **Welcome.** If a restored app already exists in the work folder, offers
-   to continue with it or restore a different backup.
+1. **Welcome.** If a backup is already restored on this computer, offers to
+   continue with it or restore another backup. Every backup gets a folder of
+   its own, so restoring another one never touches the first.
 2. **Where is your backup.** Google Drive, iCloud or a backup file.
 3. **Sign in.** The system browser opens for Google or Apple. The link is
    shown in the app in case the browser did not open. Sign-ins are cached
@@ -80,11 +81,20 @@ One window, one step at a time:
    but cannot be restored.
 5. **Backup phrase**, for encrypted backups, with word count and validation.
 6. **Restore**, then **sync** with a progress bar, block heights and stage
-   list. On the first start after a restore the app derives 2000 extra
+   list. A backup that is already restored on this computer is not downloaded
+   again unless asked; its earlier copy is then kept in a folder next to it. On the first start after a restore the app derives 2000 extra
    addresses, so funds the phone received after its last backup are found
    too, and restarts itself once. The first sync of an old node takes a
    while: it scans the chain from the wallet's birthday.
-7. **Your funds.** Balances in channels, in pending closes and on-chain,
+7. **Channel check.** The last sync stage. A backup is a snapshot: a channel
+   that closed after it was taken still looks open in it. Before any channel
+   counts as funds or can be closed, the node checks that this backup's
+   wallet holds the channel's key and that the channel's funding output is
+   on the bitcoin chain, unspent. It asks its own bitcoin peers, nobody
+   else. A channel that closed is listed under "Closed on chain" with its
+   closing transaction; a channel that fails the check is left alone.
+   Measured: 500 to 1,100 blocks a second, 10 minutes for channels from 2020.
+8. **Your funds.** Balances in channels, in pending closes and on-chain,
    with the channel list and a hint about the next step. **History** is one
    list of everything that moved money in or out of the app, newest first:
    Lightning payments sent and received with their descriptions, deposits
@@ -93,10 +103,10 @@ One window, one step at a time:
    transaction. Totals at the top: received, sent, fees, the total of the
    list, and what the app holds now. **Export** saves the list as a CSV
    file you can open in a spreadsheet.
-8. **Close channels and withdraw** to an address. Cooperative closes pay the
+9. **Close channels and withdraw** to an address. Cooperative closes pay the
    address directly. Channels whose peer is offline are skipped and can be
    force closed (funds mature after the channel delay, up to ~720 blocks).
-9. **Send the on-chain balance** to an address with a fee choice, then the
+10. **Send the on-chain balance** to an address with a fee choice, then the
    transaction id with a link to mempool.space.
 
 The **Log** button opens a panel with every tool message and the node's
@@ -104,8 +114,13 @@ log lines as they happen. **Save log** writes the whole log plus the last
 2000 lines of `lnd.log` to a file the user picks; **Copy** puts it on the
 clipboard. Ask users to attach it when reporting a problem.
 
-Advanced settings on the welcome screen: the work folder (default
-`~/.breez-recovery`) and the bitcoin peers (default: the Breez nodes
+The work folder (default `~/.breez-recovery`) holds the cached sign-ins, a
+`current` file naming the backup in use, and `backups/<node id>/` with one
+complete node folder per restored backup (`zip-<hash>` for a backup file).
+A node that an earlier release left directly in the work folder is moved
+into `backups/` on the first start; its sync progress moves with it.
+
+Advanced settings on the welcome screen: the work folder and the bitcoin peers (default: the Breez nodes
 bb1.breez.technology and bb2.breez.technology; the node connects only to
 the peers listed, and refuses to start when none of them answers). Set
 other peers with compact block filters here if the Breez nodes are gone.
@@ -162,7 +177,9 @@ recovery snapshots --icloud                         # same for iCloud
 recovery restore --node-id <id> --mnemonic "..."    # download and decrypt from Drive
 recovery restore --icloud --node-id <id>            # from iCloud
 recovery restore --zip backup.zip --mnemonic "..."  # from a backup file
-recovery status                                     # start node, sync, print balances
+recovery backups                                    # backups restored on this computer, * = in use
+recovery use <name>                                 # continue with another restored backup
+recovery status                                     # start node, sync, check channels, print balances
 recovery close --address bc1...                     # cooperative close of all channels
 recovery close --address bc1... --force             # force close channels whose peer is gone
 recovery sweep --address bc1...                     # send the on-chain balance out

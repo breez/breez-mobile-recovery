@@ -126,7 +126,7 @@ func (c *Core) restoreFiles(files map[string][]byte, key []byte) error {
 		} else if looksLikeCiphertext(name, content) {
 			return fmt.Errorf("%s does not look like a database; the backup is encrypted and needs the backup phrase", name)
 		}
-		destDir := filepath.Join(c.cfg.WorkDir, rel)
+		destDir := filepath.Join(c.dir(), rel)
 		if err := os.MkdirAll(destDir, 0700); err != nil {
 			return err
 		}

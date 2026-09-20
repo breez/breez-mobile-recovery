@@ -452,8 +452,10 @@ func (n *node) pending(ctx context.Context) (*lnrpc.PendingChannelsResponse, err
 	return n.client.PendingChannels(ctx, &lnrpc.PendingChannelsRequest{})
 }
 
-// forceClose requests a unilateral close and returns the closing txid.
-func (n *node) forceClose(ctx context.Context, channelPoint string) (string, error) {
+// closeChannel asks lnd to close one channel and returns the closing txid
+// once it is broadcast. A cooperative close pays address; a force close
+// pays the node's own wallet after the channel delay.
+func (n *node) closeChannel(ctx context.Context, channelPoint, address string, force bool) (string, error) {
 	parts := strings.SplitN(channelPoint, ":", 2)
 	if len(parts) != 2 {
 		return "", fmt.Errorf("bad channel point %q", channelPoint)
@@ -462,33 +464,74 @@ func (n *node) forceClose(ctx context.Context, channelPoint string) (string, err
 	if err != nil {
 		return "", err
 	}
-	c, cancel := context.WithTimeout(ctx, 60*time.Second)
+	// The peer is online for a cooperative close: it answers at once or
+	// not at all.
+	timeout := 15 * time.Second
+	if force {
+		timeout = 60 * time.Second
+	}
+	c, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
-	stream, err := n.client.CloseChannel(c, &lnrpc.CloseChannelRequest{
+	req := &lnrpc.CloseChannelRequest{
 		ChannelPoint: &lnrpc.ChannelPoint{
 			FundingTxid: &lnrpc.ChannelPoint_FundingTxidStr{FundingTxidStr: parts[0]},
 			OutputIndex: uint32(index),
 		},
-		Force: true,
-	})
+		Force: force,
+	}
+	if !force {
+		req.DeliveryAddress = address
+	}
+	stream, err := n.client.CloseChannel(c, req)
 	if err != nil {
 		return "", err
 	}
 	update, err := stream.Recv()
 	if err != nil {
+		// The close may have gone out although the answer did not arrive
+		// in time; lnd then lists the channel as closing.
+		if txid := n.closingTxid(ctx, channelPoint); txid != "" {
+			return txid, nil
+		}
 		return "", err
 	}
-	if p := update.GetClosePending(); p != nil {
-		h, err := chainhash.NewHash(p.Txid)
-		if err != nil {
-			return "", err
-		}
-		return h.String(), nil
+	var raw []byte
+	switch u := update.Update.(type) {
+	case *lnrpc.CloseStatusUpdate_ClosePending:
+		raw = u.ClosePending.Txid
+	case *lnrpc.CloseStatusUpdate_ChanClose:
+		raw = u.ChanClose.ClosingTxid
+	default:
+		return "", errors.New("unexpected close update")
 	}
-	return "", errors.New("unexpected close update")
+	h, err := chainhash.NewHash(raw)
+	if err != nil {
+		return "", err
+	}
+	return h.String(), nil
 }
 
-func (n *node) status(ctx context.Context, spent *spentChannels) (*Status, error) {
+// closingTxid returns the closing transaction of a channel lnd lists as
+// closing, or "".
+func (n *node) closingTxid(ctx context.Context, channelPoint string) string {
+	pend, err := n.pending(ctx)
+	if err != nil {
+		return ""
+	}
+	for _, c := range pend.WaitingCloseChannels {
+		if c.Channel.ChannelPoint == channelPoint {
+			return c.ClosingTxid
+		}
+	}
+	for _, c := range pend.PendingForceClosingChannels {
+		if c.Channel.ChannelPoint == channelPoint {
+			return c.ClosingTxid
+		}
+	}
+	return ""
+}
+
+func (n *node) status(ctx context.Context, checks *channelChecks) (*Status, error) {
 	info, err := n.info(ctx)
 	if err != nil {
 		return nil, err
@@ -514,33 +557,28 @@ func (n *node) status(ctx context.Context, spent *spentChannels) (*Status, error
 	if err != nil {
 		return nil, err
 	}
-	live := chans[:0]
 	for _, c := range chans {
-		// A channel that closed after the backup was taken still looks
-		// open here. Its funds are on chain, not in the app.
-		if g, ok := spent.get(c.ChannelPoint); ok {
-			st.ClosedOnChain = append(st.ClosedOnChain, g)
-			continue
-		}
-		// A channel this backup's wallet cannot sign for belongs to
-		// another node; it is not this app's money.
-		if spent.isForeign(c.ChannelPoint) {
+		// Only a channel the chain check confirmed counts as funds. A
+		// channel that closed after the backup was taken still looks open
+		// to lnd, and a backup can carry another node's channels.
+		switch v := checks.get(c.ChannelPoint); v.verdict {
+		case verdictOpen:
+			st.Channels = append(st.Channels, Channel{
+				ChannelPoint:  c.ChannelPoint,
+				Peer:          c.RemotePubkey,
+				Capacity:      c.Capacity,
+				LocalBalance:  c.LocalBalance,
+				RemoteBalance: c.RemoteBalance,
+				Active:        c.Active,
+			})
+			st.InChannels += c.LocalBalance
+		case verdictSpent:
+			st.ClosedOnChain = append(st.ClosedOnChain, v.spent)
+		case verdictForeign:
 			st.Warnings = append(st.Warnings, "channel "+c.ChannelPoint+" belongs to another node and is left alone")
-			continue
+		default:
+			st.Warnings = append(st.Warnings, "channel "+c.ChannelPoint+" is not counted: "+v.reason)
 		}
-		live = append(live, c)
-	}
-	chans = live
-	for _, c := range chans {
-		st.Channels = append(st.Channels, Channel{
-			ChannelPoint:  c.ChannelPoint,
-			Peer:          c.RemotePubkey,
-			Capacity:      c.Capacity,
-			LocalBalance:  c.LocalBalance,
-			RemoteBalance: c.RemoteBalance,
-			Active:        c.Active,
-		})
-		st.InChannels += c.LocalBalance
 	}
 
 	pend, err := n.pending(ctx)

@@ -52,7 +52,7 @@ it the address look-ahead after restore fails with an unimplemented RPC.
 
 `ui/frontend/mock/serve.sh` serves the frontend with a mocked Go backend
 on http://127.0.0.1:8765/. Query parameters pick the state: `?hasNode=1`,
-`?scenario=channels|pending|onchain`, `?slow=list|restore|sync|rescan1|rescan2`
+`?scenario=channels|pending|onchain`, `?slow=list|restore|sync|rescan1|rescan2|channels`
 holds a stage so it can be screenshotted. The History screen is reached
 with `?hasNode=1`, Continue, then History (mock ledger in mock.js). The
 mock's method list must match `ui/app.go`; add a stub when adding a bound
@@ -71,6 +71,26 @@ Every value is rendered with textContent; keep it that way.
 - `bindings.Init` and the rest of the library are process-wide singletons.
   `bindings.RestoreBackup` stops and re-creates the app object itself;
   starting after it works. Two lnd instances cannot share a work folder.
+  The library's databases (`db.Get`, `chainservice.Get`,
+  `channeldbservice.Get`) and its logger are refcounted singletons that
+  ignore the folder argument after the first call: a process is bound to
+  the first folder the library was initialised on (`boundLibDir`).
+- One folder per backup (core/dirs.go): the work folder holds the sign-ins,
+  `current` and `backups/<node id or zip-hash>/`. Up to alpha.25 every
+  restore landed in the one work folder, so a second backup inherited the
+  first one's `channel.backup`, markers, chain files and logs (the
+  2026-09-17 crash). Because of the binding above the library must not be
+  initialised before the backup is chosen: Drive backups are listed with a
+  direct read-only Drive call (core/drive.go), not through the library,
+  and the library is initialised in `GoogleRestore` on the chosen folder.
+  Switching backups after the library ran needs a program restart
+  (`App.RestoreOther` relaunches with `BREEZ_RECOVERY_RELAUNCH=restore-other`).
+  Restoring a backup that is already there moves the old folder aside
+  (`<name>.replaced-<time>`), it never deletes a wallet. A legacy
+  single-folder install is moved into `backups/` on start, by renaming a
+  fixed list of node files. The Drive listing shows when the backup files
+  were written; the snapshot folder's own time changes when a backup is
+  restored, which made a 2022 backup look like the newest one.
 - Sync progress. lnd exposes no per-block progress for the wallet rescan,
   the slow part of a first sync. What works: while the wallet is behind,
   `GetInfo.best_header_timestamp` is the wallet's synced-to block time
@@ -88,7 +108,7 @@ Every value is rendered with textContent; keep it that way.
   on each of four branches through WalletKit NextAddr (needs the
   `walletrpc` build tag), writes FORCE_RESCAN and the `addresses-extended`
   marker, stops the node and returns ErrRestartRequired; the app relaunches
-  itself with BREEZ_RECOVERY_AUTOCONTINUE=1 and the CLI asks to be run
+  itself with BREEZ_RECOVERY_RELAUNCH=continue and the CLI asks to be run
   again. Re-initialising the library in-process after a stop hangs, which
   is why it is a program restart. The look-ahead was 500 per branch in
   alpha.12 to alpha.20; that made Roy's folder redo the whole history
@@ -113,6 +133,37 @@ Every value is rendered with textContent; keep it that way.
   (P2P + REST, cert to 2026-11-09); bb1 accepts TCP on 8333 but never
   replies to a version message and its TLS certificate expired
   2026-07-12, so it contributes nothing until ops fixes it.
+- Channel check (core/chaincheck.go). lnd's channel list is not proof of
+  funds: a backup is a snapshot, and a channel that closed later still
+  looks open until lnd's own spend scan finishes, which takes long after a
+  restore. Roy force closed seven such channels on 2026-09-17. Rules: only
+  a channel with the verdict "open" counts in the balances and is ever
+  closed, and the app closes channels one by one itself (the library's
+  `CloseChannels` acts on every channel lnd has). Open means the wallet
+  derives the funding key at the channel's KeyLocator AND neutrino found
+  the funding output, with the expected script, unspent up to the tip.
+  Anything else, including "not found" and "not checked", is left alone.
+  Things that bit: (1) neutrino's GetUtxo returns a nil report when the
+  output is not in the start block; nil is not "unspent". (2) The start
+  height must be the funding's confirmation block. Zero-conf channels
+  (every Breez LSP channel since late 2022) have an alias ShortChannelID
+  with height 16,000,000; use ZeroConfRealScid. A start height past the
+  tip is never dequeued by neutrino's scanner and the batch manager spins
+  forever. (3) The LSP's 2021 to 2022 zero-conf channels carry made-up
+  SCIDs too (155808:14239027:26761) with heights far below the funding
+  broadcast height; for those `findFundingBlock` walks the filters from
+  the broadcast height (2016 blocks at most). (4) GetUtxo blocks, and the
+  scanner starts its pass at the first request to arrive, deferring lower
+  heights to a second pass over the chain: the lowest request goes first.
+  (5) Progress only reaches requests still pending, so every request
+  carries the handler. `TestScanFundingOutputsLive` runs the scan against
+  the real chain on copies of channel databases (skipped unless its
+  environment is set).
+- Open risk, not solved: a force close broadcasts the backup's commitment.
+  If the phone kept using the channel after its last backup, that
+  commitment is revoked and the peer can take the channel. lnd refuses only
+  after it has talked to the peer (ChanStatusLocalDataLoss); with the peer
+  offline, which is when force close is offered, nothing checks it.
 - Old nodes can make lnd's PendingChannels RPC fail ("unable to find
   arbitrator"). Status reports a warning instead of failing.
 - Restoring a DIFFERENT node over a work dir that already held one must
