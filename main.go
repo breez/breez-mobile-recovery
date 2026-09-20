@@ -83,6 +83,7 @@ func main() {
 	flag.StringVar(&cfg.FeeURL, "feeurl", cfg.FeeURL, "fee estimator URL lnd uses with neutrino")
 	flag.StringVar(&cfg.ICloudAPIToken, "icloud-token", cfg.ICloudAPIToken, "CloudKit API token for iCloud backups")
 	flag.StringVar(&cfg.Peers, "peer", "", "comma-separated bitcoin peers with compact filters; empty = the Breez nodes")
+	flag.StringVar(&cfg.LogLevel, "loglevel", cfg.LogLevel, "lnd log level, for support: info, debug, or per subsystem like NTFN=debug,CNCT=debug,BTCN=debug")
 	flag.BoolVar(&verbose, "v", false, "forward node logs and notifications to stderr")
 	flag.Usage = usage
 	flag.Parse()
@@ -292,7 +293,35 @@ func cmdStatus(ctx context.Context, c *core.Core, args []string) error {
 		return err
 	}
 	printStatus(st)
+	// lnd collects a closed channel's funds when the next block arrives,
+	// and only while it runs: stopping here would leave them uncollected
+	// until the next start.
+	for collecting(st) {
+		fmt.Fprintln(out, "\nCollecting funds. The node keeps running; Ctrl-C stops it.")
+		select {
+		case <-ctx.Done():
+			return nil
+		case <-time.After(time.Minute):
+		}
+		if st, err = c.Status(ctx); err != nil {
+			return err
+		}
+		printStatus(st)
+	}
 	return nil
+}
+
+// collecting reports whether money is on its way into the on-chain balance.
+func collecting(st *core.Status) bool {
+	if st.OnchainUnconfirmed > 0 {
+		return true
+	}
+	for _, c := range st.ClosedOnChain {
+		if c.Collect > 0 {
+			return true
+		}
+	}
+	return false
 }
 
 func printStatus(st *core.Status) {
@@ -303,7 +332,7 @@ func printStatus(st *core.Status) {
 	fmt.Fprintf(out, "On-chain:        %d sat confirmed, %d sat unconfirmed\n", st.OnchainConfirmed, st.OnchainUnconfirmed)
 	fmt.Fprintf(out, "Open channels:   %d\n", len(st.Channels))
 	if len(st.Channels) > 0 {
-		fmt.Fprintln(out, "  These channels are still open. Email this output to Breez support: contact@breez.technology.")
+		fmt.Fprintln(out, "  Channels still open. Email this output to contact@breez.technology.")
 	}
 	for _, c := range st.Channels {
 		state := "active"
@@ -311,9 +340,16 @@ func printStatus(st *core.Status) {
 			state = "inactive (peer offline)"
 		}
 		if c.Dust {
-			state += fmt.Sprintf(", below its dust limit of %d sat: not counted", c.DustLimit)
+			state += fmt.Sprintf(", dust (limit %d)", c.DustLimit)
 		}
 		fmt.Fprintf(out, "  %s  peer %s  local %d sat  remote %d sat  %s\n", c.ChannelPoint, c.Peer, c.LocalBalance, c.RemoteBalance, state)
+	}
+	for _, c := range st.ClosedOnChain {
+		line := fmt.Sprintf("  %s  closed on chain in %s", c.ChannelPoint, c.ClosingTxID)
+		if c.Collect > 0 {
+			line += fmt.Sprintf(", %d sat being collected", c.Collect)
+		}
+		fmt.Fprintln(out, line)
 	}
 	fmt.Fprintf(out, "Pending closes:  %d\n", len(st.Pending))
 	for _, p := range st.Pending {

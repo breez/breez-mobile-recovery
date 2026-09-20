@@ -165,6 +165,39 @@ Every value is rendered with textContent; keep it that way.
   that; a long stage that shows nothing reads as a hang.
   `TestScanFundingOutputsLive` runs the scan against the real chain on
   copies of channel databases (skipped unless its environment is set).
+- Funds of a channel the LSP closed (the main case for users: the LSP
+  force closed every channel) are NOT in the wallet after a restore. The
+  close pays the user's share to the channel's payment key (to_remote),
+  not to a wallet address, so the history check finds nothing (0
+  transactions is normal for an LSP-funded node) and only lnd can collect
+  it: chain watcher detects the close, commitSweepResolver offers the
+  output to the sweeper, the sweeper publishes at the NEXT BLOCK
+  (immediate=false), so the node must stay up until then. Proven on Roy's
+  node 2026-09-20: 999 sat output, sweep tx 431ca969..., 135 sat fee,
+  864 sat to the wallet; the sweeper's budget is half the amount, small
+  outputs are swept. Two things made this take ~10 hours and look like
+  "Nothing left to recover": (1) lnd started at the bootstrap checkpoint
+  (triggerHeight=812000) because the look-ahead restart came seconds
+  after the first start, before the one-minute header sync; its neutrino
+  notifier then walks every block to the tip downloading full blocks, ~4
+  a second, and its historical spend rescan only covers up to where it
+  started. StartNode now waits for "Fully caught up with cfheaders"
+  before the look-ahead restart, so the final process starts lnd at the
+  tip and the close is found by the filter scan in minutes (lnd persists
+  its scan position as a height hint across restarts). (2) The screen
+  only knew lnd's balances. The channel check now derives the to_remote
+  script (`toUsScript`, lnwallet.CommitScriptToRemote with the PEER as
+  commitment owner; static-remote-key and anchor channels only, nil
+  otherwise: never guess an amount), reads what the closing transaction
+  paid to it, keeps watching whether that output is spent (the phone may
+  have swept it), and reports the rest as `SpentChannel.Collect`, counted
+  as Pending. Verified with `TestToUsScriptLive` on 14 real force closes:
+  the 3 that paid match the derived address exactly. A COOPERATIVE close
+  pays a wallet address instead; the wallet finds that itself (address
+  look-ahead) and Collect stays 0. The app's check and lnd's scan halve
+  each other's speed when they run together (845 blocks/s alone, ~250 and
+  ~70-190 together); total time is the same either way, so they are not
+  ordered. The CLI `status` keeps the node running while collecting.
 - The tool closes nothing (decided by Roy 2026-09-20): no cooperative
   close, no force close, and `recovery lncli` refuses closechannel,
   closeallchannels and abandonchannel. Breez closed its channels with the

@@ -91,6 +91,10 @@ One window, one step at a time:
    on the bitcoin chain, unspent. It asks its own bitcoin peers, nobody
    else. A channel that closed is listed under "Closed on chain" with its
    closing transaction; a channel that fails the check is left alone.
+   When the close paid this app and nobody collected it yet, the amount
+   counts as Pending and reads "being collected": the node moves it into
+   the on-chain balance at the next block after it has found the close,
+   which takes minutes. The funds screen refreshes itself meanwhile.
    Measured: 845 blocks a second, so 4 to 5 minutes for channels opened in
    late 2022 and 6 to 10 for channels from 2020.
 8. **Your funds.** Three tiles: In channels, Pending, On-chain,
@@ -184,7 +188,8 @@ recovery restore --icloud --node-id <id>            # from iCloud
 recovery restore --zip backup.zip --mnemonic "..."  # from a backup file
 recovery backups                                    # backups restored on this computer, * = in use
 recovery use <name>                                 # continue with another restored backup
-recovery status                                     # start node, sync, check channels, print balances
+recovery status                                     # start node, sync, check channels, print balances;
+                                                    # keeps running while funds are being collected
 recovery sweep --address bc1...                     # send the on-chain balance out
 recovery history                                    # every payment, close and on-chain move, with totals
 recovery history --json                             # the same as JSON, plus the raw app payment list

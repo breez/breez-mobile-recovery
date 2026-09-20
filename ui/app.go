@@ -398,7 +398,7 @@ func (a *App) Restore(req RestoreRequest) error {
 			answer, err := wruntime.MessageDialog(a.ctx, wruntime.MessageDialogOptions{
 				Type:          wruntime.QuestionDialog,
 				Title:         "Already restored",
-				Message:       "This backup is already restored on this computer.\n\nContinue with it? No downloads it again; the earlier copy is kept in its own folder.",
+				Message:       "Already restored here. Continue with it?\n\nNo restores it again.",
 				Buttons:       []string{"Yes", "No"},
 				DefaultButton: "Yes",
 			})

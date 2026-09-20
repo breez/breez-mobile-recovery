@@ -352,7 +352,6 @@
     }
     if (rescan) {
       $("#sync-blocks").textContent = unknown ? "" : "about block " + p.height.toLocaleString("en-US") + " of " + p.target.toLocaleString("en-US");
-      $("#live-found").textContent = String(p.found || 0);
       $("#live-through").textContent = p.throughTime ? new Date(p.throughTime * 1000).toLocaleDateString(undefined, { dateStyle: "medium" }) : "not yet";
     } else {
       $("#sync-blocks").textContent = p.height ? "block " + p.height.toLocaleString("en-US") + " of " + (p.stage === "channels" ? "" : "about ") + p.target.toLocaleString("en-US") : "";
@@ -385,7 +384,8 @@
     $("#stat-channels").textContent = fmtSat(st.inChannels);
     $("#stat-channels-sub").textContent = st.channels.length ? st.channels.length + " channel" + (st.channels.length > 1 ? "s" : "") + (fmtBtc(st.inChannels) ? ", " + fmtBtc(st.inChannels) : "") : "no open channels";
     $("#stat-pending").textContent = fmtSat(st.inPending);
-    $("#stat-pending-sub").textContent = st.pending.length ? st.pending.length + " close" + (st.pending.length > 1 ? "s" : "") + " in progress" : "";
+    const collecting = (st.closedOnChain || []).filter((c) => c.collect > 0).length;
+    $("#stat-pending-sub").textContent = st.pending.length ? st.pending.length + " close" + (st.pending.length > 1 ? "s" : "") + " in progress" : (collecting ? "being collected" : "");
     $("#stat-onchain").textContent = fmtSat(st.onchainConfirmed);
     $("#stat-onchain-sub").textContent = st.onchainUnconfirmed ? "+ " + fmtSat(st.onchainUnconfirmed) + " unconfirmed" : (fmtBtc(st.onchainConfirmed) || "");
 
@@ -397,7 +397,9 @@
 
     let advice;
     if (hasChannels) {
-      advice = "These channels are still open. Copy the list and email it to Breez support: contact@breez.technology.";
+      advice = "Channels still open. Email the list to contact@breez.technology.";
+    } else if ((st.closedOnChain || []).some((c) => c.collect > 0)) {
+      advice = "Collecting funds from a closed channel. Keep the app open.";
     } else if (st.pending.length) {
       advice = "Channels are closing. Leave this window open, or come back later, until the funds show as ready to send. Then send the on-chain balance.";
     } else if (hasOnchain) {
@@ -416,7 +418,7 @@
       st.channels.forEach((c) => {
         const item = el("div", "item static");
         const main = el("div", "item-main");
-        main.appendChild(el("div", "item-title", fmtSat(c.localBalance) + " yours" + (c.dust ? ", too small to pay out" : "")));
+        main.appendChild(el("div", "item-title", fmtSat(c.localBalance) + " yours" + (c.dust ? ", dust" : "")));
         main.appendChild(el("div", "item-sub", c.channelPoint));
         item.appendChild(main);
         item.appendChild(el("span", "tag " + (c.active ? "ok" : "warn"), c.active ? "peer online" : "peer offline"));
@@ -430,7 +432,7 @@
       st.closedOnChain.forEach((c) => {
         const item = el("div", "item static");
         const main = el("div", "item-main");
-        main.appendChild(el("div", "item-title", "Closed after this backup was taken"));
+        main.appendChild(el("div", "item-title", c.collect > 0 ? fmtSat(c.collect) + " being collected" : "Closed after this backup"));
         main.appendChild(el("div", "item-sub", c.closingTxid));
         item.appendChild(main);
         item.appendChild(txLink(c.closingTxid));
@@ -468,6 +470,17 @@
     } catch (e) { showError(errMsg(e)); }
     finally { setBusy(false); }
   }
+
+  // While money is on its way (a closed channel being collected, a close
+  // maturing, an unconfirmed balance) the funds screen keeps itself current,
+  // quietly: no busy state, and errors wait for the next manual refresh.
+  setInterval(async () => {
+    const st = ui.status;
+    if (ui.screen !== "wallet" || ui.busy || !st) return;
+    const moving = st.pending.length || st.onchainUnconfirmed > 0 || (st.closedOnChain || []).some((c) => c.collect > 0);
+    if (!moving) return;
+    try { ui.status = await api.GetStatus(); if (ui.screen === "wallet") renderWallet(); } catch (e) { /* next round */ }
+  }, 30000);
 
   // ---------------------------------------------------------------- history
 

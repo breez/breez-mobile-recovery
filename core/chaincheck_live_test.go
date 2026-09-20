@@ -10,6 +10,8 @@ import (
 
 	"github.com/breez/breez/chainservice"
 	breezdb "github.com/breez/breez/db"
+	"github.com/btcsuite/btcd/chaincfg"
+	"github.com/btcsuite/btcd/txscript"
 	"github.com/lightningnetwork/lnd/channeldb"
 )
 
@@ -106,5 +108,98 @@ func TestScanFundingOutputsLive(t *testing.T) {
 		if !seen[point] {
 			t.Errorf("expected channel %s not found in the channel databases", point)
 		}
+	}
+}
+
+// TestToUsScriptLive checks the script toUsScript derives against real
+// closing transactions. It is skipped unless the environment names its
+// inputs and reads only copies of channel databases.
+//
+//	BREEZ_LIVE_CHANDBS  dirs holding a COPY of a channel.db, colon separated
+//	BREEZ_LIVE_TOUS     JSON file: {"<channel point>": {"forced": true,
+//	                    "outputs": [{"address": "bc1...", "value": 999}]}}
+//	                    the plain key outputs of the channel's closing
+//	                    transaction, and whether it was a commitment (the
+//	                    closer is paid through a script output) rather than a
+//	                    cooperative close (both sides paid to addresses)
+func TestToUsScriptLive(t *testing.T) {
+	path := os.Getenv("BREEZ_LIVE_TOUS")
+	if path == "" {
+		t.Skip("BREEZ_LIVE_TOUS not set")
+	}
+	type output struct {
+		Address string `json:"address"`
+		Value   int64  `json:"value"`
+	}
+	type closing struct {
+		Forced  bool     `json:"forced"`
+		Outputs []output `json:"outputs"`
+	}
+	expect := map[string]closing{}
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := json.Unmarshal(raw, &expect); err != nil {
+		t.Fatal(err)
+	}
+	seen := map[string]bool{}
+	matched := 0
+	for _, dir := range strings.Split(os.Getenv("BREEZ_LIVE_CHANDBS"), ":") {
+		db, err := channeldb.Open(dir)
+		if err != nil {
+			t.Fatalf("%s: %v", dir, err)
+		}
+		chans, err := db.ChannelStateDB().FetchAllChannels()
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, ch := range chans {
+			point := ch.FundingOutpoint.String()
+			cl, ok := expect[point]
+			if !ok || seen[point] {
+				continue
+			}
+			seen[point] = true
+			outs := cl.Outputs
+			script := toUsScript(ch)
+			if script == nil {
+				t.Logf("%s: type %d, no script derivable; %d key outputs in its close", point, ch.ChanType, len(outs))
+				if len(outs) > 0 {
+					t.Errorf("%s: its close paid a key output but no script was derived", point)
+				}
+				continue
+			}
+			_, addrs, _, err := txscript.ExtractPkScriptAddrs(script, &chaincfg.MainNetParams)
+			if err != nil || len(addrs) != 1 {
+				t.Fatalf("%s: derived script has no single address: %v", point, err)
+			}
+			derived := addrs[0].EncodeAddress()
+			hit := false
+			for _, o := range outs {
+				if o.Address == derived {
+					hit = true
+					matched++
+					t.Logf("%s: derived %s = the %d sat output of its close", point, derived, o.Value)
+				}
+			}
+			switch {
+			case len(outs) > 0 && !hit && cl.Forced:
+				t.Errorf("%s: derived %s, but its close paid %v", point, derived, outs)
+			case len(outs) > 0 && !hit:
+				// A cooperative close pays this side to a wallet address,
+				// which the wallet finds itself: nothing for lnd to
+				// collect, and no match is the right answer.
+				t.Logf("%s: cooperative close, paid to wallet addresses; derived %s matches none, as it should", point, derived)
+			}
+			if len(outs) == 0 {
+				t.Logf("%s: derived %s; its close has no key output (nothing was paid to this side)", point, derived)
+			}
+		}
+		db.Close()
+	}
+	t.Logf("%d closes paid this side, all matched", matched)
+	if matched == 0 {
+		t.Error("no close with a payout was checked")
 	}
 }

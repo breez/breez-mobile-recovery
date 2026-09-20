@@ -23,6 +23,7 @@ import (
 	"github.com/lightningnetwork/lnd/input"
 	"github.com/lightningnetwork/lnd/lnrpc/signrpc"
 	"github.com/lightningnetwork/lnd/lnrpc/walletrpc"
+	"github.com/lightningnetwork/lnd/lnwallet"
 )
 
 // SpentChannel is a channel the node still lists as open although its
@@ -33,6 +34,11 @@ type SpentChannel struct {
 	ChannelPoint string `json:"channelPoint"`
 	ClosingTxID  string `json:"closingTxid"`
 	Height       uint32 `json:"height"`
+	// Collect is what the closing transaction paid to this app's key and
+	// nobody has spent yet: money lnd still has to collect into the
+	// wallet. Zero when there is none, or when the output cannot be told
+	// apart (channels older than static remote keys).
+	Collect int64 `json:"collect"`
 }
 
 // A channel lnd lists as open gets one of these verdicts. Only verdictOpen
@@ -91,6 +97,9 @@ type channelFunding struct {
 	outpoint   wire.OutPoint
 	pkScript   []byte
 	heightHint uint32
+	// toUsScript is the output script a close by the peer pays this app's
+	// share to, nil when it cannot be derived.
+	toUsScript []byte
 }
 
 // fundingHeightHint is the block to start looking for the funding output
@@ -137,6 +146,23 @@ func fundingPkScript(ch *channeldb.OpenChannel) ([]byte, error) {
 	return input.WitnessScriptHash(multiSig)
 }
 
+// toUsScript is the output script a close by the peer pays this app's share
+// to. With static remote keys (every channel since 2020) it is fixed by the
+// channel's own payment key; older channels tweak the key per commitment
+// and it cannot be told from here, so nil.
+func toUsScript(ch *channeldb.OpenChannel) []byte {
+	if !ch.ChanType.IsTweakless() && !ch.ChanType.HasAnchors() {
+		return nil
+	}
+	// The commitment is the peer's, so "initiator" is the peer's role.
+	desc, _, err := lnwallet.CommitScriptToRemote(ch.ChanType, !ch.IsInitiator,
+		ch.LocalChanCfg.PaymentBasePoint.PubKey, ch.ThawHeight, input.NoneTapLeaf())
+	if err != nil {
+		return nil
+	}
+	return desc.PkScript()
+}
+
 // filterSource is the part of neutrino's chain service the scan uses.
 type filterSource interface {
 	BestBlock() (*headerfs.BlockStamp, error)
@@ -151,6 +177,12 @@ type fundingState struct {
 	found    bool // the transaction creating the output was seen
 	scriptOK bool // and the output carries the channel's script
 	spent    *SpentChannel
+	// toUs is the closing transaction's output paying this app, nil when
+	// there is none; toUsSpent says somebody spent it already (the phone
+	// swept it, or lnd did).
+	toUs      *wire.OutPoint
+	toUsValue int64
+	toUsSpent bool
 }
 
 // applyBlock records what one block says about the funding outputs: which
@@ -176,8 +208,18 @@ func applyBlock(states []*fundingState, block *wire.MsgBlock, height uint32) {
 		}
 		for _, in := range tx.TxIn {
 			for _, st := range states {
+				if st.toUs != nil && in.PreviousOutPoint == *st.toUs {
+					st.toUsSpent = true
+				}
 				if st.spent == nil && in.PreviousOutPoint == st.f.outpoint {
-					st.spent = &SpentChannel{ChannelPoint: st.f.chanPoint, ClosingTxID: tx.TxHash().String(), Height: height}
+					hash := tx.TxHash()
+					st.spent = &SpentChannel{ChannelPoint: st.f.chanPoint, ClosingTxID: hash.String(), Height: height}
+					for i, out := range tx.TxOut {
+						if st.f.toUsScript != nil && bytes.Equal(out.PkScript, st.f.toUsScript) {
+							st.toUs, st.toUsValue = &wire.OutPoint{Hash: hash, Index: uint32(i)}, out.Value
+							break
+						}
+					}
 				}
 			}
 		}
@@ -189,6 +231,9 @@ func applyBlock(states []*fundingState, block *wire.MsgBlock, height uint32) {
 func (st *fundingState) verdict() channelVerdict {
 	switch {
 	case st.spent != nil:
+		if st.toUs != nil && !st.toUsSpent {
+			st.spent.Collect = st.toUsValue
+		}
 		return channelVerdict{verdict: verdictSpent, spent: *st.spent}
 	case !st.found:
 		// Not found is not the same as unspent.
@@ -247,12 +292,19 @@ func scanFundingOutputs(ctx context.Context, chain filterSource, fundings []chan
 		// not spent yet.
 		var scripts [][]byte
 		for _, st := range states {
-			if st.f.heightHint <= h && st.spent == nil {
+			switch {
+			case st.f.heightHint > h:
+			case st.spent == nil:
 				scripts = append(scripts, st.f.pkScript)
+			case st.toUs != nil && !st.toUsSpent:
+				// Closed: keep watching this app's output of the close,
+				// to know whether it is still there to collect.
+				scripts = append(scripts, st.f.toUsScript)
 			}
 		}
 		if len(scripts) == 0 {
-			// Everything reached so far is spent: skip to the next funding.
+			// Nothing left to watch among the channels reached so far:
+			// skip to the next funding.
 			next := tip + 1
 			for _, st := range states {
 				if st.f.heightHint > h && st.f.heightHint < next {
@@ -373,7 +425,7 @@ func (c *Core) CheckChannelsOnChain(ctx context.Context, onProgress func(SyncPro
 		}
 		if !bytes.Equal(res.RawKeyBytes, key.PubKey.SerializeCompressed()) {
 			verdicts[rpcChan.ChannelPoint] = channelVerdict{verdict: verdictForeign}
-			c.progressf("  %s belongs to another node: this backup cannot sign for it.", rpcChan.ChannelPoint)
+			c.progressf("  %s belongs to another node.", rpcChan.ChannelPoint)
 			continue
 		}
 		script, err := fundingPkScript(ch)
@@ -385,11 +437,12 @@ func (c *Core) CheckChannelsOnChain(ctx context.Context, onProgress func(SyncPro
 			outpoint:   ch.FundingOutpoint,
 			pkScript:   script,
 			heightHint: fundingHeightHint(ch),
+			toUsScript: toUsScript(ch),
 		})
 	}
 
 	if len(fundings) > 0 {
-		c.progressf("Checking on chain that your %d channel(s) are still open...", len(fundings))
+		c.progressf("Checking %d channel(s) on chain...", len(fundings))
 		// The stage is on screen from the first moment and keeps moving:
 		// an update twice a second, whatever the scan's speed.
 		started := time.Now()
@@ -432,14 +485,17 @@ func (c *Core) CheckChannelsOnChain(ctx context.Context, onProgress func(SyncPro
 		switch v := verdicts[rpcChan.ChannelPoint]; v.verdict {
 		case verdictSpent:
 			closed = append(closed, v.spent)
-			c.progressf("  %s closed on chain already, in transaction %s.", rpcChan.ChannelPoint, v.spent.ClosingTxID)
+			c.progressf("  %s closed on chain, tx %s.", rpcChan.ChannelPoint, v.spent.ClosingTxID)
+			if v.spent.Collect > 0 {
+				c.progressf("  Collecting %d sat from this close.", v.spent.Collect)
+			}
 		case verdictUnverified:
-			c.progressf("  %s could not be confirmed on chain (%s); it is left alone.", rpcChan.ChannelPoint, v.reason)
+			c.progressf("  %s not confirmed on chain: %s.", rpcChan.ChannelPoint, v.reason)
 		}
 	}
 	c.checks.set(verdicts)
 	if len(closed) > 0 {
-		c.progressf("%d of your channels closed after this backup was taken; their funds are not in the app.", len(closed))
+		c.progressf("%d channel(s) closed after this backup.", len(closed))
 	}
 	return closed, nil
 }
