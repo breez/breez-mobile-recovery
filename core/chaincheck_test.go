@@ -15,17 +15,13 @@ import (
 	"github.com/lightningnetwork/lnd/lnwire"
 )
 
-// fakeChain has a tip and fails every query.
+// fakeChain has a tip and fails every other query.
 type fakeChain struct {
 	tip int32
 }
 
 func (f *fakeChain) BestBlock() (*headerfs.BlockStamp, error) {
 	return &headerfs.BlockStamp{Height: f.tip}, nil
-}
-
-func (f *fakeChain) GetUtxo(options ...neutrino.RescanOption) (*neutrino.SpendReport, error) {
-	return nil, errors.New("no peers")
 }
 
 func (f *fakeChain) GetBlockHash(int64) (*chainhash.Hash, error) { return nil, errors.New("unused") }
@@ -36,29 +32,60 @@ func (f *fakeChain) GetBlock(chainhash.Hash, ...neutrino.QueryOption) (*btcutil.
 	return nil, errors.New("unused")
 }
 
-func TestVerdictFromReport(t *testing.T) {
+// fundingTx builds a transaction with one output carrying script.
+func fundingTx(script []byte) *wire.MsgTx {
+	tx := wire.NewMsgTx(2)
+	tx.AddTxIn(&wire.TxIn{PreviousOutPoint: wire.OutPoint{Index: 7}})
+	tx.AddTxOut(&wire.TxOut{Value: 100000, PkScript: script})
+	return tx
+}
+
+func spendOf(op wire.OutPoint) *wire.MsgTx {
+	tx := wire.NewMsgTx(2)
+	tx.AddTxIn(&wire.TxIn{PreviousOutPoint: op})
+	tx.AddTxOut(&wire.TxOut{Value: 90000, PkScript: []byte{0x51}})
+	return tx
+}
+
+func TestVerdictNeedsProof(t *testing.T) {
 	script := []byte{0x00, 0x20, 0x01}
-	f := channelFunding{chanPoint: "aa:0", pkScript: script, heightHint: 700000}
-	spend := wire.NewMsgTx(2)
+	funding := fundingTx(script)
+	op := wire.OutPoint{Hash: funding.TxHash(), Index: 0}
+	other := fundingTx([]byte{0x00, 0x20, 0x02})
+	closing := spendOf(op)
+
 	cases := []struct {
 		name   string
-		report *neutrino.SpendReport
+		blocks [][]*wire.MsgTx
 		want   string
 	}{
-		{"no report: the output was not found, which is not unspent", nil, verdictUnverified},
-		{"report without output", &neutrino.SpendReport{}, verdictUnverified},
-		{"output with another script", &neutrino.SpendReport{Output: &wire.TxOut{PkScript: []byte{0x51}}}, verdictUnverified},
-		{"output found and unspent", &neutrino.SpendReport{Output: &wire.TxOut{PkScript: script}}, verdictOpen},
-		{"spent", &neutrino.SpendReport{SpendingTx: spend, SpendingTxHeight: 800000}, verdictSpent},
+		{"nothing seen: not found is not unspent", nil, verdictUnverified},
+		{"only other transactions", [][]*wire.MsgTx{{other}}, verdictUnverified},
+		{"created, never spent", [][]*wire.MsgTx{{other, funding}}, verdictOpen},
+		{"created, spent later", [][]*wire.MsgTx{{funding}, {other}, {closing}}, verdictSpent},
+		{"created and spent in one block", [][]*wire.MsgTx{{funding, closing}}, verdictSpent},
+		{"spend seen without the creation", [][]*wire.MsgTx{{closing}}, verdictSpent},
 	}
 	for _, tc := range cases {
-		got := verdictFromReport(f, tc.report)
+		st := &fundingState{f: channelFunding{chanPoint: "aa:0", outpoint: op, pkScript: script, heightHint: 700000}}
+		for i, txs := range tc.blocks {
+			applyBlock([]*fundingState{st}, &wire.MsgBlock{Transactions: txs}, 700000+uint32(i))
+		}
+		got := st.verdict()
 		if got.verdict != tc.want {
 			t.Errorf("%s: verdict %q, want %q", tc.name, got.verdict, tc.want)
 		}
-		if tc.want == verdictSpent && (got.spent.ClosingTxID != spend.TxHash().String() || got.spent.Height != 800000) {
-			t.Errorf("%s: wrong spend details %+v", tc.name, got.spent)
+		if tc.want == verdictSpent && got.spent.ClosingTxID != closing.TxHash().String() {
+			t.Errorf("%s: closing tx %s", tc.name, got.spent.ClosingTxID)
 		}
+	}
+
+	// The right transaction with another script at that output is not
+	// this channel's funding.
+	st := &fundingState{f: channelFunding{chanPoint: "aa:0", outpoint: op, pkScript: []byte{0x00, 0x20, 0x09}, heightHint: 700000}}
+	applyBlock([]*fundingState{st}, &wire.MsgBlock{Transactions: []*wire.MsgTx{funding}}, 700000)
+	if got := st.verdict(); got.verdict != verdictUnverified {
+		t.Errorf("wrong script: verdict %q, want unverified", got.verdict)
 	}
 }
 
@@ -67,8 +94,8 @@ func TestVerdictFromReport(t *testing.T) {
 func TestScanSkipsUnusableHeights(t *testing.T) {
 	chain := &fakeChain{tip: 900000}
 	fundings := []channelFunding{
-		{chanPoint: "alias:0", heightHint: 16000000, exact: true},
-		{chanPoint: "zero:0", heightHint: 0, exact: true},
+		{chanPoint: "alias:0", heightHint: 16000000},
+		{chanPoint: "zero:0", heightHint: 0},
 	}
 	got, err := scanFundingOutputs(context.Background(), chain, fundings, nil)
 	if err != nil {
@@ -84,7 +111,7 @@ func TestScanSkipsUnusableHeights(t *testing.T) {
 // A scan error must surface as an error, never as a verdict.
 func TestScanErrorIsReturned(t *testing.T) {
 	chain := &fakeChain{tip: 900000}
-	_, err := scanFundingOutputs(context.Background(), chain, []channelFunding{{chanPoint: "aa:0", heightHint: 700000, exact: true}}, nil)
+	_, err := scanFundingOutputs(context.Background(), chain, []channelFunding{{chanPoint: "aa:0", heightHint: 700000}}, nil)
 	if err == nil {
 		t.Fatal("expected the scan error")
 	}
@@ -111,11 +138,10 @@ func TestFundingHeightHint(t *testing.T) {
 		broadcast uint32
 		zeroConf  bool
 		want      uint32
-		exact     bool
 	}{
-		{"ordinary channel", 653404, 653403, false, 653404, true},
-		{"made-up scid of the LSP's early zero-conf channels", 155808, 726471, false, 726471, false},
-		{"zero-conf alias, funding not confirmed in the backup", 16000000, 758330, true, 758330, false},
+		{"ordinary channel", 653404, 653403, false, 653404},
+		{"made-up scid of the LSP's early zero-conf channels", 155808, 726471, false, 726471},
+		{"zero-conf alias, funding not confirmed in the backup", 16000000, 758330, true, 758330},
 	}
 	for _, tc := range cases {
 		ch := &channeldb.OpenChannel{
@@ -125,9 +151,8 @@ func TestFundingHeightHint(t *testing.T) {
 		if tc.zeroConf {
 			ch.ChanType = channeldb.ZeroConfBit
 		}
-		got, exact := fundingHeightHint(ch)
-		if got != tc.want || exact != tc.exact {
-			t.Errorf("%s: hint %d exact %v, want %d %v", tc.name, got, exact, tc.want, tc.exact)
+		if got := fundingHeightHint(ch); got != tc.want {
+			t.Errorf("%s: hint %d, want %d", tc.name, got, tc.want)
 		}
 	}
 }

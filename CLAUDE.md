@@ -141,22 +141,30 @@ Every value is rendered with textContent; keep it that way.
   derives the funding key at the channel's KeyLocator AND neutrino found
   the funding output, with the expected script, unspent up to the tip.
   Anything else, including "not found" and "not checked", is left alone.
-  Things that bit: (1) neutrino's GetUtxo returns a nil report when the
-  output is not in the start block; nil is not "unspent". (2) The start
-  height must be the funding's confirmation block. Zero-conf channels
-  (every Breez LSP channel since late 2022) have an alias ShortChannelID
-  with height 16,000,000; use ZeroConfRealScid. A start height past the
-  tip is never dequeued by neutrino's scanner and the batch manager spins
-  forever. (3) The LSP's 2021 to 2022 zero-conf channels carry made-up
-  SCIDs too (155808:14239027:26761) with heights far below the funding
-  broadcast height; for those `findFundingBlock` walks the filters from
-  the broadcast height (2016 blocks at most). (4) GetUtxo blocks, and the
-  scanner starts its pass at the first request to arrive, deferring lower
-  heights to a second pass over the chain: the lowest request goes first.
-  (5) Progress only reaches requests still pending, so every request
-  carries the handler. `TestScanFundingOutputsLive` runs the scan against
-  the real chain on copies of channel databases (skipped unless its
-  environment is set).
+  The scan (`scanFundingOutputs`) walks the node's compact filters itself
+  from the oldest funding height to the tip, with
+  `GetCFilter(..., OptimisticBatch())`, and opens every block whose filter
+  matches a funding script: the block that created the output and the one
+  that spent it both match. Measured 845 blocks/s alone, about 330 while
+  something else pulls filters from the same peer. Things that bit:
+  (1) It does NOT use neutrino's GetUtxo (alpha.27 did). lnd runs its own
+  GetUtxo scans through the same scanner, which works one batch at a time:
+  requests that arrive while a batch is past their height wait for it to
+  end and then get a pass of their own, with no progress in between. On
+  Roy's node the stage sat silent for minutes. GetUtxo also returns a nil
+  report when the output is not in its start block (nil is not "unspent")
+  and never dequeues a request whose start is past the tip. (2) Without
+  OptimisticBatch every filter is one network round trip: 15 blocks/s.
+  (3) The start height must be a real chain height at or below the
+  funding's confirmation. Zero-conf channels (every Breez LSP channel
+  since late 2022) have an alias ShortChannelID with height 16,000,000;
+  use ZeroConfRealScid. The LSP's 2021 to 2022 zero-conf channels carry
+  made-up SCIDs too (155808:14239027:26761), far below the funding
+  broadcast height; for those the scan starts at FundingBroadcastHeight.
+  (4) The stage reports from its first moment and twice a second after
+  that; a long stage that shows nothing reads as a hang.
+  `TestScanFundingOutputsLive` runs the scan against the real chain on
+  copies of channel databases (skipped unless its environment is set).
 - The tool closes nothing (decided by Roy 2026-09-20): no cooperative
   close, no force close, and `recovery lncli` refuses closechannel,
   closeallchannels and abandonchannel. Breez closed its channels with the

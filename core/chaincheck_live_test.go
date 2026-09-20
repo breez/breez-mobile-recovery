@@ -58,9 +58,8 @@ func TestScanFundingOutputsLive(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			hint, exact := fundingHeightHint(ch)
-			f := channelFunding{chanPoint: point, outpoint: ch.FundingOutpoint, pkScript: script, heightHint: hint, exact: exact}
-			t.Logf("%s zero-conf=%v scid height %d, hint %d exact=%v", point, ch.IsZeroConf(), ch.ShortChanID().BlockHeight, hint, exact)
+			f := channelFunding{chanPoint: point, outpoint: ch.FundingOutpoint, pkScript: script, heightHint: fundingHeightHint(ch)}
+			t.Logf("%s zero-conf=%v scid height %d, hint %d", point, ch.IsZeroConf(), ch.ShortChanID().BlockHeight, f.heightHint)
 			fundings = append(fundings, f)
 		}
 		db.Close()

@@ -176,9 +176,13 @@ func (l *logBuffer) text() string {
 	return strings.Join(l.lines, "\n") + "\n"
 }
 
+// snapshot returns every line so far, for the frontend when it starts. The
+// lines still waiting to go out as an event are part of it, so they are
+// dropped from the queue; they showed twice otherwise.
 func (l *logBuffer) snapshot() []string {
 	l.mu.Lock()
 	defer l.mu.Unlock()
+	l.pending = nil
 	return append([]string(nil), l.lines...)
 }
 

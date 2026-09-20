@@ -130,8 +130,11 @@ in the balances or is ever closed:
 1. The wallet must derive the channel's funding key at the channel's own
    `KeyLocator` (`walletrpc.DeriveKey`). Otherwise the channel belongs to
    another node (Finding 3).
-2. The node's own neutrino must find the funding output on chain, with the
-   expected script, and no spend of it up to the tip. A spend means the
+2. The node must find the funding output on chain, with the expected
+   script, and no spend of it up to the tip. It walks its own compact
+   filters for this (not neutrino's GetUtxo, which queues behind lnd's own
+   scans and reports nothing meanwhile: alpha.27 sat silent for minutes on
+   a real node, fixed in alpha.28). A spend means the
    channel closed after the backup (Finding 2); it is listed under "Closed
    on chain" with the closing transaction.
 3. Anything the check cannot positively confirm (output not found, no

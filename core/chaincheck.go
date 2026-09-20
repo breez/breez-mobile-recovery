@@ -91,13 +91,10 @@ type channelFunding struct {
 	outpoint   wire.OutPoint
 	pkScript   []byte
 	heightHint uint32
-	// exact says heightHint is the block the funding confirmed in, see
-	// fundingHeightHint.
-	exact bool
 }
 
-// fundingHeightHint is the block to start looking for the funding output,
-// and whether that is the block the funding transaction confirmed in. Three
+// fundingHeightHint is the block to start looking for the funding output
+// at: the block it confirmed in, or a real chain height below it. Three
 // kinds of channel exist in Breez backups:
 //
 //   - ordinary ones, whose ShortChannelID holds the confirmation block;
@@ -108,65 +105,20 @@ type channelFunding struct {
 //     ShortChannelID is made up as well, with a height far below the block
 //     the funding was broadcast at.
 //
-// When the confirmation block is not known the hint is the broadcast
-// height, a real chain height at or below it, and findFundingBlock locates
-// the block from there.
-func fundingHeightHint(ch *channeldb.OpenChannel) (hint uint32, exact bool) {
+// When the confirmation block is not known the hint is the height the
+// funding was broadcast at; the scan finds the output wherever it confirmed.
+func fundingHeightHint(ch *channeldb.OpenChannel) uint32 {
 	broadcast := ch.BroadcastHeight()
 	if ch.IsZeroConf() {
 		if ch.ZeroConfConfirmed() {
-			return ch.ZeroConfRealScid().BlockHeight, true
+			return ch.ZeroConfRealScid().BlockHeight
 		}
-		return broadcast, false
+		return broadcast
 	}
 	if scid := ch.ShortChanID().BlockHeight; scid != 0 && scid >= broadcast {
-		return scid, true
+		return scid
 	}
-	return broadcast, false
-}
-
-// fundingSearchWindow is how far past the broadcast height the funding
-// transaction is looked for: two weeks of blocks, the limit after which lnd
-// itself gives up on a funding transaction.
-const fundingSearchWindow = 2016
-
-// findFundingBlock locates the block that created the funding output,
-// using the node's own compact filters, from the block it was broadcast at.
-func findFundingBlock(chain utxoSource, f channelFunding, tip uint32) (uint32, bool, error) {
-	last := f.heightHint + fundingSearchWindow
-	if last > tip {
-		last = tip
-	}
-	for h := f.heightHint; h <= last; h++ {
-		hash, err := chain.GetBlockHash(int64(h))
-		if err != nil {
-			return 0, false, err
-		}
-		filter, err := chain.GetCFilter(*hash, wire.GCSFilterRegular)
-		if err != nil {
-			return 0, false, err
-		}
-		if filter == nil {
-			return 0, false, fmt.Errorf("no filter for block %d", h)
-		}
-		match, err := filter.Match(builder.DeriveKey(hash), f.pkScript)
-		if err != nil {
-			return 0, false, err
-		}
-		if !match {
-			continue
-		}
-		block, err := chain.GetBlock(*hash)
-		if err != nil {
-			return 0, false, err
-		}
-		for _, tx := range block.Transactions() {
-			if *tx.Hash() == f.outpoint.Hash {
-				return h, true, nil
-			}
-		}
-	}
-	return 0, false, nil
+	return broadcast
 }
 
 // fundingPkScript is the script of the channel's funding output, as lnd's
@@ -185,20 +137,84 @@ func fundingPkScript(ch *channeldb.OpenChannel) ([]byte, error) {
 	return input.WitnessScriptHash(multiSig)
 }
 
-// utxoSource is the part of neutrino's chain service the scan uses.
-type utxoSource interface {
-	GetUtxo(options ...neutrino.RescanOption) (*neutrino.SpendReport, error)
+// filterSource is the part of neutrino's chain service the scan uses.
+type filterSource interface {
 	BestBlock() (*headerfs.BlockStamp, error)
 	GetBlockHash(height int64) (*chainhash.Hash, error)
 	GetCFilter(hash chainhash.Hash, filterType wire.FilterType, options ...neutrino.QueryOption) (*gcs.Filter, error)
 	GetBlock(hash chainhash.Hash, options ...neutrino.QueryOption) (*btcutil.Block, error)
 }
 
-// scanFundingOutputs asks the chain, for each funding output, whether it is
-// still unspent. The verdict is open only when the scan found the output
-// itself, with the expected script, and no spend of it up to the tip. A
-// scan error is returned, never turned into a verdict.
-func scanFundingOutputs(ctx context.Context, chain utxoSource, fundings []channelFunding, onBlock func(height, from, tip uint32)) (map[string]channelVerdict, error) {
+// fundingState is what the scan has learnt about one funding output.
+type fundingState struct {
+	f        channelFunding
+	found    bool // the transaction creating the output was seen
+	scriptOK bool // and the output carries the channel's script
+	spent    *SpentChannel
+}
+
+// applyBlock records what one block says about the funding outputs: which
+// were created in it and which were spent in it.
+func applyBlock(states []*fundingState, block *wire.MsgBlock, height uint32) {
+	for _, tx := range block.Transactions {
+		var txid *chainhash.Hash
+		for _, st := range states {
+			if st.found {
+				continue
+			}
+			if txid == nil {
+				h := tx.TxHash()
+				txid = &h
+			}
+			if *txid != st.f.outpoint.Hash {
+				continue
+			}
+			st.found = true
+			if i := st.f.outpoint.Index; int(i) < len(tx.TxOut) {
+				st.scriptOK = bytes.Equal(tx.TxOut[i].PkScript, st.f.pkScript)
+			}
+		}
+		for _, in := range tx.TxIn {
+			for _, st := range states {
+				if st.spent == nil && in.PreviousOutPoint == st.f.outpoint {
+					st.spent = &SpentChannel{ChannelPoint: st.f.chanPoint, ClosingTxID: tx.TxHash().String(), Height: height}
+				}
+			}
+		}
+	}
+}
+
+// verdict turns what the scan saw into a verdict. Open needs positive
+// proof: the output itself, with the channel's script, and no spend of it.
+func (st *fundingState) verdict() channelVerdict {
+	switch {
+	case st.spent != nil:
+		return channelVerdict{verdict: verdictSpent, spent: *st.spent}
+	case !st.found:
+		// Not found is not the same as unspent.
+		return channelVerdict{verdict: verdictUnverified,
+			reason: fmt.Sprintf("funding transaction not found on chain from block %d on", st.f.heightHint)}
+	case !st.scriptOK:
+		return channelVerdict{verdict: verdictUnverified,
+			reason: "the funding output on chain does not match the channel's keys"}
+	}
+	return channelVerdict{verdict: verdictOpen}
+}
+
+// scanFundingOutputs walks the node's compact filters from the oldest
+// funding height to the tip and looks into every block whose filter matches
+// a funding script: the block that created an output and the block that
+// spent it both match. A scan error is returned, never turned into a
+// verdict.
+//
+// It does not use neutrino's GetUtxo. lnd runs its own GetUtxo scans through
+// the same scanner, which works one batch at a time: requests that arrive
+// while a batch is past their height wait for it to end and then get a pass
+// of their own, with no progress in between (seen live 2026-09-20, the
+// stage sat silent for minutes). GetUtxo also only looks for the output in
+// its start block, so it needs the exact confirmation height, which the
+// LSP's early channels do not have.
+func scanFundingOutputs(ctx context.Context, chain filterSource, fundings []channelFunding, onBlock func(height, from, tip uint32)) (map[string]channelVerdict, error) {
 	out := map[string]channelVerdict{}
 	best, err := chain.BestBlock()
 	if err != nil {
@@ -206,121 +222,88 @@ func scanFundingOutputs(ctx context.Context, chain utxoSource, fundings []channe
 	}
 	tip := uint32(best.Height)
 
-	var scan []channelFunding
+	var states []*fundingState
 	for _, f := range fundings {
-		// A start height beyond the tip would never be picked up by
-		// neutrino's scanner (the request would wait forever), and zero
-		// means the channel database has no usable height.
+		// Zero means the channel database has no usable height, and a
+		// height past the tip is not a chain height (a zero-conf alias).
 		if f.heightHint == 0 || f.heightHint > tip {
 			out[f.chanPoint] = channelVerdict{verdict: verdictUnverified,
 				reason: fmt.Sprintf("no usable funding height (%d, chain tip %d)", f.heightHint, tip)}
 			continue
 		}
-		if !f.exact {
-			height, found, err := findFundingBlock(chain, f, tip)
-			if err != nil {
-				return nil, fmt.Errorf("look for the funding of channel %s: %w", f.chanPoint, err)
-			}
-			if !found {
-				out[f.chanPoint] = channelVerdict{verdict: verdictUnverified,
-					reason: fmt.Sprintf("funding transaction not found on chain from block %d on", f.heightHint)}
-				continue
-			}
-			f.heightHint = height
-		}
-		scan = append(scan, f)
+		states = append(states, &fundingState{f: f})
 	}
-	if len(scan) == 0 {
+	if len(states) == 0 {
 		return out, nil
 	}
-	// Lowest height first: neutrino's scanner starts a pass at the lowest
-	// height queued and picks up the requests for later heights on its way,
-	// so all outputs are covered by one pass over the chain.
-	sort.Slice(scan, func(i, j int) bool { return scan[i].heightHint < scan[j].heightHint })
-	from := scan[0].heightHint
+	sort.Slice(states, func(i, j int) bool { return states[i].f.heightHint < states[j].f.heightHint })
+	from := states[0].f.heightHint
 
-	type result struct {
-		f      channelFunding
-		report *neutrino.SpendReport
-		err    error
-	}
-	results := make(chan result, len(scan))
-	// neutrino reports progress only to requests that are still waiting,
-	// and any of them can be answered early (a spend found), so all of
-	// them carry the handler and each height is passed on once.
-	var progressMu sync.Mutex
-	reached := from
-	progress := func(h uint32) {
-		progressMu.Lock()
-		fresh := h > reached
-		if fresh {
-			reached = h
+	for h := from; h <= tip; h++ {
+		if err := ctx.Err(); err != nil {
+			return nil, err
 		}
-		progressMu.Unlock()
-		if fresh {
-			onBlock(h, from, tip)
-		}
-	}
-	for i, f := range scan {
-		opts := []neutrino.RescanOption{
-			neutrino.WatchInputs(neutrino.InputWithScript{OutPoint: f.outpoint, PkScript: f.pkScript}),
-			neutrino.StartBlock(&headerfs.BlockStamp{Height: int32(f.heightHint)}),
-			neutrino.QuitChan(ctx.Done()),
-		}
-		if onBlock != nil {
-			opts = append(opts, neutrino.ProgressHandler(progress))
-		}
-		go func(f channelFunding, opts []neutrino.RescanOption) {
-			report, err := chain.GetUtxo(opts...)
-			results <- result{f: f, report: report, err: err}
-		}(f, opts)
-		if i == 0 {
-			// GetUtxo blocks, so every request needs a goroutine, and the
-			// scanner starts its pass at whichever request reaches it
-			// first. Seen live: a pass started at the newest channel and
-			// all older ones waited for a second pass over the chain. Let
-			// the lowest one get there first.
-			time.Sleep(250 * time.Millisecond)
-		}
-	}
-	var firstErr error
-	for range scan {
-		r := <-results
-		if r.err != nil {
-			if firstErr == nil {
-				firstErr = fmt.Errorf("check channel %s on chain: %w", r.f.chanPoint, r.err)
+		// Watch the outputs whose funding height is reached and that are
+		// not spent yet.
+		var scripts [][]byte
+		for _, st := range states {
+			if st.f.heightHint <= h && st.spent == nil {
+				scripts = append(scripts, st.f.pkScript)
 			}
+		}
+		if len(scripts) == 0 {
+			// Everything reached so far is spent: skip to the next funding.
+			next := tip + 1
+			for _, st := range states {
+				if st.f.heightHint > h && st.f.heightHint < next {
+					next = st.f.heightHint
+				}
+			}
+			if next > tip {
+				break
+			}
+			h = next - 1
 			continue
 		}
-		out[r.f.chanPoint] = verdictFromReport(r.f, r.report)
+		hash, err := chain.GetBlockHash(int64(h))
+		if err != nil {
+			return nil, fmt.Errorf("block %d: %w", h, err)
+		}
+		// OptimisticBatch fetches the following filters along with this
+		// one, as neutrino's own rescan does. Without it every block is a
+		// network round trip: 15 blocks a second against several hundred.
+		filter, err := chain.GetCFilter(*hash, wire.GCSFilterRegular, neutrino.OptimisticBatch())
+		if err != nil {
+			return nil, fmt.Errorf("filter of block %d: %w", h, err)
+		}
+		if filter == nil {
+			return nil, fmt.Errorf("no filter for block %d", h)
+		}
+		match, err := filter.MatchAny(builder.DeriveKey(hash), scripts)
+		if err != nil {
+			return nil, fmt.Errorf("filter of block %d: %w", h, err)
+		}
+		if match {
+			block, err := chain.GetBlock(*hash)
+			if err != nil {
+				return nil, fmt.Errorf("fetch block %d: %w", h, err)
+			}
+			applyBlock(states, block.MsgBlock(), h)
+		}
+		if onBlock != nil {
+			onBlock(h, from, tip)
+		}
+		// Blocks found while scanning are part of the answer.
+		if h == tip {
+			if best, err := chain.BestBlock(); err == nil && uint32(best.Height) > tip {
+				tip = uint32(best.Height)
+			}
+		}
 	}
-	if firstErr != nil {
-		return nil, firstErr
+	for _, st := range states {
+		out[st.f.chanPoint] = st.verdict()
 	}
 	return out, nil
-}
-
-// verdictFromReport turns neutrino's answer about a funding output into a
-// verdict. Open needs positive proof: the output itself, with the expected
-// script, and no spend.
-func verdictFromReport(f channelFunding, report *neutrino.SpendReport) channelVerdict {
-	switch {
-	case report != nil && report.SpendingTx != nil:
-		return channelVerdict{verdict: verdictSpent, spent: SpentChannel{
-			ChannelPoint: f.chanPoint,
-			ClosingTxID:  report.SpendingTx.TxHash().String(),
-			Height:       report.SpendingTxHeight,
-		}}
-	case report == nil || report.Output == nil:
-		// neutrino returns no report when it did not find the output in
-		// the start block. Not found is not the same as unspent.
-		return channelVerdict{verdict: verdictUnverified,
-			reason: fmt.Sprintf("funding output not found on chain at block %d", f.heightHint)}
-	case !bytes.Equal(report.Output.PkScript, f.pkScript):
-		return channelVerdict{verdict: verdictUnverified,
-			reason: "the funding output on chain does not match the channel's keys"}
-	}
-	return channelVerdict{verdict: verdictOpen}
 }
 
 // CheckChannelsOnChain verifies every channel lnd lists as open before the
@@ -397,33 +380,44 @@ func (c *Core) CheckChannelsOnChain(ctx context.Context, onProgress func(SyncPro
 		if err != nil {
 			return nil, fmt.Errorf("funding script of %s: %w", rpcChan.ChannelPoint, err)
 		}
-		hint, exact := fundingHeightHint(ch)
 		fundings = append(fundings, channelFunding{
 			chanPoint:  rpcChan.ChannelPoint,
 			outpoint:   ch.FundingOutpoint,
 			pkScript:   script,
-			heightHint: hint,
-			exact:      exact,
+			heightHint: fundingHeightHint(ch),
 		})
 	}
 
 	if len(fundings) > 0 {
 		c.progressf("Checking on chain that your %d channel(s) are still open...", len(fundings))
+		// The stage is on screen from the first moment and keeps moving:
+		// an update twice a second, whatever the scan's speed.
 		started := time.Now()
-		scanned, err := scanFundingOutputs(ctx, chain, fundings, func(height, from, tip uint32) {
-			if onProgress == nil || height%500 != 0 {
+		report := func(height, from, tip uint32) {
+			if onProgress == nil {
 				return
 			}
-			p := SyncProgress{Stage: "channels", Height: height, Target: tip, Percent: -1, Remaining: -1,
+			p := SyncProgress{Stage: "channels", Height: height, Target: tip, Percent: 0, Remaining: -1,
 				Message: "Making sure your channels are still open"}
-			if tip > from {
+			if tip > from && height >= from {
 				p.Percent = 100 * float64(height-from) / float64(tip-from)
 			}
 			// Time left from the rate so far, once there is a rate to speak of.
-			if elapsed := time.Since(started).Seconds(); elapsed >= 15 && height > from && tip >= height {
+			if elapsed := time.Since(started).Seconds(); elapsed >= 10 && height > from && tip >= height {
 				p.Remaining = int64(float64(tip-height) / (float64(height-from) / elapsed))
 			}
 			onProgress(p)
+		}
+		if onProgress != nil {
+			onProgress(SyncProgress{Stage: "channels", Percent: 0, Remaining: -1,
+				Message: "Making sure your channels are still open"})
+		}
+		var lastReport time.Time
+		scanned, err := scanFundingOutputs(ctx, chain, fundings, func(height, from, tip uint32) {
+			if height == tip || time.Since(lastReport) >= 500*time.Millisecond {
+				lastReport = time.Now()
+				report(height, from, tip)
+			}
 		})
 		if err != nil {
 			return nil, err

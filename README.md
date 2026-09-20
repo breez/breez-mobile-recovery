@@ -91,7 +91,8 @@ One window, one step at a time:
    on the bitcoin chain, unspent. It asks its own bitcoin peers, nobody
    else. A channel that closed is listed under "Closed on chain" with its
    closing transaction; a channel that fails the check is left alone.
-   Measured: 10 minutes for channels opened in 2020, less for newer ones.
+   Measured: 845 blocks a second, so 4 to 5 minutes for channels opened in
+   late 2022 and 6 to 10 for channels from 2020.
 8. **Your funds.** Balances in channels, in pending closes and on-chain,
    with the channel list and a hint about the next step. **History** is one
    list of everything that moved money in or out of the app, newest first:
