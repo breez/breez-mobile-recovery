@@ -555,7 +555,7 @@ func (c *Core) StartNode(ctx context.Context) error {
 	// there is nothing to walk and old closes are found through the filter
 	// scan. The headers take about a minute; the next start is the one that
 	// counts, so wait for them here.
-	c.progressf("Catching up with the bitcoin chain before the restart...")
+	c.progressf("Catching up with the bitcoin chain...")
 	if err := waitHeadersSynced(ctx, 15*time.Minute); err != nil {
 		return err
 	}
@@ -700,7 +700,7 @@ func (c *Core) Status(ctx context.Context) (*Status, error) {
 		}
 		if !c.dustLogged[ch.ChannelPoint] {
 			c.dustLogged[ch.ChannelPoint] = true
-			c.progressf("Channel %s holds %d sat, below its dust limit of %d sat: no close can pay that out, so it is not counted as funds.", ch.ChannelPoint, ch.LocalBalance, ch.DustLimit)
+			c.progressf("Channel %s: %d sat is dust (limit %d), not counted.", ch.ChannelPoint, ch.LocalBalance, ch.DustLimit)
 		}
 	}
 	return st, nil

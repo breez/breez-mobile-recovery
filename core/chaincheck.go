@@ -425,7 +425,7 @@ func (c *Core) CheckChannelsOnChain(ctx context.Context, onProgress func(SyncPro
 		}
 		if !bytes.Equal(res.RawKeyBytes, key.PubKey.SerializeCompressed()) {
 			verdicts[rpcChan.ChannelPoint] = channelVerdict{verdict: verdictForeign}
-			c.progressf("  %s belongs to another node: this backup cannot sign for it.", rpcChan.ChannelPoint)
+			c.progressf("  %s belongs to another node.", rpcChan.ChannelPoint)
 			continue
 		}
 		script, err := fundingPkScript(ch)
@@ -442,7 +442,7 @@ func (c *Core) CheckChannelsOnChain(ctx context.Context, onProgress func(SyncPro
 	}
 
 	if len(fundings) > 0 {
-		c.progressf("Checking on chain that your %d channel(s) are still open...", len(fundings))
+		c.progressf("Checking %d channel(s) on chain...", len(fundings))
 		// The stage is on screen from the first moment and keeps moving:
 		// an update twice a second, whatever the scan's speed.
 		started := time.Now()
@@ -485,17 +485,17 @@ func (c *Core) CheckChannelsOnChain(ctx context.Context, onProgress func(SyncPro
 		switch v := verdicts[rpcChan.ChannelPoint]; v.verdict {
 		case verdictSpent:
 			closed = append(closed, v.spent)
-			c.progressf("  %s closed on chain already, in transaction %s.", rpcChan.ChannelPoint, v.spent.ClosingTxID)
+			c.progressf("  %s closed on chain, tx %s.", rpcChan.ChannelPoint, v.spent.ClosingTxID)
 			if v.spent.Collect > 0 {
-				c.progressf("  The close paid this app %d sat; the node collects it into the on-chain balance.", v.spent.Collect)
+				c.progressf("  Collecting %d sat from this close.", v.spent.Collect)
 			}
 		case verdictUnverified:
-			c.progressf("  %s could not be confirmed on chain (%s); it is left alone.", rpcChan.ChannelPoint, v.reason)
+			c.progressf("  %s not confirmed on chain: %s.", rpcChan.ChannelPoint, v.reason)
 		}
 	}
 	c.checks.set(verdicts)
 	if len(closed) > 0 {
-		c.progressf("%d of your channels closed after this backup was taken; their funds are not in the app.", len(closed))
+		c.progressf("%d channel(s) closed after this backup.", len(closed))
 	}
 	return closed, nil
 }

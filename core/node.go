@@ -526,9 +526,9 @@ func (n *node) status(ctx context.Context, checks *channelChecks) (*Status, erro
 			// on-chain balances.
 			st.InPending += v.spent.Collect
 		case verdictForeign:
-			st.Warnings = append(st.Warnings, "channel "+c.ChannelPoint+" belongs to another node and is left alone")
+			st.Warnings = append(st.Warnings, "channel "+c.ChannelPoint+" belongs to another node")
 		default:
-			st.Warnings = append(st.Warnings, "channel "+c.ChannelPoint+" is not counted: "+v.reason)
+			st.Warnings = append(st.Warnings, "channel "+c.ChannelPoint+" not counted: "+v.reason)
 		}
 	}
 

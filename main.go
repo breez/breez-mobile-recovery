@@ -304,7 +304,7 @@ func printStatus(st *core.Status) {
 	fmt.Fprintf(out, "On-chain:        %d sat confirmed, %d sat unconfirmed\n", st.OnchainConfirmed, st.OnchainUnconfirmed)
 	fmt.Fprintf(out, "Open channels:   %d\n", len(st.Channels))
 	if len(st.Channels) > 0 {
-		fmt.Fprintln(out, "  These channels are still open. Email this output to Breez support: contact@breez.technology.")
+		fmt.Fprintln(out, "  Channels still open. Email this output to contact@breez.technology.")
 	}
 	for _, c := range st.Channels {
 		state := "active"
@@ -312,7 +312,7 @@ func printStatus(st *core.Status) {
 			state = "inactive (peer offline)"
 		}
 		if c.Dust {
-			state += fmt.Sprintf(", below its dust limit of %d sat: not counted", c.DustLimit)
+			state += fmt.Sprintf(", dust (limit %d)", c.DustLimit)
 		}
 		fmt.Fprintf(out, "  %s  peer %s  local %d sat  remote %d sat  %s\n", c.ChannelPoint, c.Peer, c.LocalBalance, c.RemoteBalance, state)
 	}
