@@ -471,6 +471,17 @@
     finally { setBusy(false); }
   }
 
+  // While money is on its way (a closed channel being collected, a close
+  // maturing, an unconfirmed balance) the funds screen keeps itself current,
+  // quietly: no busy state, and errors wait for the next manual refresh.
+  setInterval(async () => {
+    const st = ui.status;
+    if (ui.screen !== "wallet" || ui.busy || !st) return;
+    const moving = st.pending.length || st.onchainUnconfirmed > 0 || (st.closedOnChain || []).some((c) => c.collect > 0);
+    if (!moving) return;
+    try { ui.status = await api.GetStatus(); if (ui.screen === "wallet") renderWallet(); } catch (e) { /* next round */ }
+  }, 30000);
+
   // ---------------------------------------------------------------- history
 
   function txLink(txid) {

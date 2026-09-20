@@ -293,7 +293,35 @@ func cmdStatus(ctx context.Context, c *core.Core, args []string) error {
 		return err
 	}
 	printStatus(st)
+	// lnd collects a closed channel's funds when the next block arrives,
+	// and only while it runs: stopping here would leave them uncollected
+	// until the next start.
+	for collecting(st) {
+		fmt.Fprintln(out, "\nCollecting funds. The node keeps running; Ctrl-C stops it.")
+		select {
+		case <-ctx.Done():
+			return nil
+		case <-time.After(time.Minute):
+		}
+		if st, err = c.Status(ctx); err != nil {
+			return err
+		}
+		printStatus(st)
+	}
 	return nil
+}
+
+// collecting reports whether money is on its way into the on-chain balance.
+func collecting(st *core.Status) bool {
+	if st.OnchainUnconfirmed > 0 {
+		return true
+	}
+	for _, c := range st.ClosedOnChain {
+		if c.Collect > 0 {
+			return true
+		}
+	}
+	return false
 }
 
 func printStatus(st *core.Status) {
