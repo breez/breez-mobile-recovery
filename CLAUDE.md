@@ -39,8 +39,8 @@ Linux needs libgtk-3-dev and libwebkit2gtk-4.1-dev and the `webkit2_41`
 tag (CI builds on Ubuntu 22.04 with 4.1 so the binary runs on 24.04 too).
 The Google client is not in the source: for a local run set
 `BREEZ_GOOGLE_CLIENT_ID` and `BREEZ_GOOGLE_CLIENT_SECRET` (the Desktop app
-OAuth client of the `breez-technology` Google Cloud project; CI gets them
-from repository secrets). `BREEZ_RECOVERY_WORKDIR` overrides the work
+OAuth client of the `breez-technology` Google Cloud project), or bake them
+in with `-ldflags "-X .../core.GoogleClientID=<id> -X .../core.GoogleClientSecret=<secret>"`. `BREEZ_RECOVERY_WORKDIR` overrides the work
 folder, useful for testing next to a real one.
 
 `go test ./core` covers the phrase to key derivation and decryption.
@@ -287,6 +287,39 @@ Every value is rendered with textContent; keep it that way.
   new token in the CloudKit Console (Production environment).
 - iCloud has not been tested end to end; the team member with an iOS
   backup does that.
+
+## Reference (moved out of the README, which is for users)
+
+- Backup format: a zip of lnd's `wallet.db` and `channel.db` plus
+  `breez.db` (very old backups: the three files as separate assets). It is
+  the channel state as of the backup. The backup phrase (12 or 24 words)
+  is only the zip's encryption key, NOT the lnd seed; without the files it
+  restores nothing.
+- Android keeps it in Google Drive's hidden `appDataFolder`, visible only
+  to OAuth clients of the Breez Google Cloud project `breez-technology`;
+  the tool uses a "Desktop app" client of that project. iOS keeps it in the
+  CloudKit private database of container `iCloud.technology.breez.client`;
+  the tool uses a CloudKit web API token (Production) whose sign-in
+  callback is `https://breez.github.io/breez/icloud-callback.html` (branch
+  `gh-pages` of the breez library repo), which forwards Apple's session
+  token to `127.0.0.1:53821`. That token therefore shows in the GitHub
+  Pages request log; the container's custom URL scheme would avoid it but
+  needs an app bundle that registers the scheme and a token made for it.
+- Restoring through the library marks the snapshot in the cloud as restored
+  by this machine, as a new phone would; a phone still running that node
+  stops itself on its next start. The direct Drive listing marks nothing.
+- The production defaults (breez server, bootstrap, closed channels URL,
+  fee URL, zero-conf and scid-alias options in lnd.conf) come from the
+  `breez.conf` and `lnd.conf` bundled in the released APK. The LSP token is
+  not bundled and not needed for syncing or sweeping
+  (`-X .../core.LSPToken=...` bakes one in). lnd with neutrino on mainnet
+  needs the external fee estimator (`-feeurl`).
+- Other build targets: `wails build -platform darwin/universal |
+  windows/amd64 | linux/amd64`. The CLI accepts `-workdir`, `-network`,
+  `-breezserver`, `-bootstrap`, `-closedchannelsurl`, `-lsptoken`,
+  `-feeurl`, `-icloud-token`, `-peer`, `-loglevel`, `-v`.
+- README rules (Roy, 2026-09-20): it is for the user, keep it short, no
+  builder detail there.
 
 ## Copy and design rules from the product owner
 
