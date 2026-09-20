@@ -12,6 +12,7 @@ import (
 	"github.com/lightninglabs/neutrino"
 	"github.com/lightninglabs/neutrino/headerfs"
 	"github.com/lightningnetwork/lnd/channeldb"
+	"github.com/lightningnetwork/lnd/lnrpc"
 	"github.com/lightningnetwork/lnd/lnwire"
 )
 
@@ -163,5 +164,32 @@ func TestLncliRefusesClosingCommands(t *testing.T) {
 		if _, err := c.Lncli(context.Background(), cmd); err == nil {
 			t.Errorf("%q was not refused", cmd)
 		}
+	}
+}
+
+func TestIsDust(t *testing.T) {
+	for _, tc := range []struct {
+		balance       int64
+		local, remote uint64
+		want          bool
+	}{
+		// Breez mobile: own limit zero, the LSP's decides.
+		{100, 0, 354, true}, {179, 0, 354, true}, {353, 0, 354, true}, {354, 0, 354, false},
+		{500, 0, 573, true}, {600, 0, 573, false}, {999, 0, 573, false},
+		// The larger limit counts whichever side has it.
+		{400, 546, 354, true}, {5000, 546, 354, false},
+	} {
+		c := &lnrpc.Channel{
+			LocalBalance:      tc.balance,
+			LocalConstraints:  &lnrpc.ChannelConstraints{DustLimitSat: tc.local},
+			RemoteConstraints: &lnrpc.ChannelConstraints{DustLimitSat: tc.remote},
+		}
+		if got := isDust(c); got != tc.want {
+			t.Errorf("balance %d, limits %d/%d: %v, want %v", tc.balance, tc.local, tc.remote, got, tc.want)
+		}
+	}
+	// A channel without constraints reported is never called dust.
+	if isDust(&lnrpc.Channel{LocalBalance: 0}) {
+		t.Error("no dust limit known, yet called dust")
 	}
 }

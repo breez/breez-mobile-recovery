@@ -93,7 +93,7 @@ One window, one step at a time:
    closing transaction; a channel that fails the check is left alone.
    Measured: 845 blocks a second, so 4 to 5 minutes for channels opened in
    late 2022 and 6 to 10 for channels from 2020.
-8. **Your funds.** Balances in channels, in pending closes and on-chain,
+8. **Your funds.** Three tiles: In channels, Pending, On-chain,
    with the channel list and a hint about the next step. **History** is one
    list of everything that moved money in or out of the app, newest first:
    Lightning payments sent and received with their descriptions, deposits
@@ -106,8 +106,11 @@ One window, one step at a time:
    users from its side, so the funds of a restored app arrive on-chain, and
    closing from a backup is dangerous: a backup can hold an old channel
    state, and publishing it lets the peer take the whole channel. A
-   channel that is still open is shown with a request to send the log to
-   Breez support (contact@breez.technology).
+   channel that is still open is listed with a request to email the list
+   to Breez support (contact@breez.technology); **Copy the list** puts the
+   node id, the channels, their peer and balances on the clipboard. A
+   balance below the channel's dust limit can never be paid out and does
+   not count as funds.
 9. **Send the on-chain balance** to an address with a fee choice, then the
    transaction id with a link to mempool.space.
 

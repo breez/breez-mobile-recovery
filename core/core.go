@@ -147,6 +147,9 @@ type Core struct {
 	nodeDir   string
 	layoutErr error
 
+	// dustLogged remembers which dust channels the log already explained.
+	dustLogged map[string]bool
+
 	// checks holds the chain check's verdict on every channel lnd lists
 	// as open. See CheckChannelsOnChain.
 	checks channelChecks
@@ -632,6 +635,10 @@ type Channel struct {
 	LocalBalance  int64  `json:"localBalance"`
 	RemoteBalance int64  `json:"remoteBalance"`
 	Active        bool   `json:"active"`
+	// Dust says LocalBalance is below DustLimit, the smallest output a
+	// close of this channel can carry: it can never be paid out.
+	Dust      bool  `json:"dust"`
+	DustLimit int64 `json:"dustLimit"`
 }
 
 // PendingClose is a channel whose close is in flight.
@@ -667,7 +674,24 @@ func (c *Core) Status(ctx context.Context) (*Status, error) {
 	if c.node == nil {
 		return nil, errors.New("node not started")
 	}
-	return c.node.status(ctx, &c.checks)
+	st, err := c.node.status(ctx, &c.checks)
+	if err != nil {
+		return nil, err
+	}
+	// The log says once why a dust channel does not count.
+	for _, ch := range st.Channels {
+		if !ch.Dust {
+			continue
+		}
+		if c.dustLogged == nil {
+			c.dustLogged = map[string]bool{}
+		}
+		if !c.dustLogged[ch.ChannelPoint] {
+			c.dustLogged[ch.ChannelPoint] = true
+			c.progressf("Channel %s holds %d sat, below its dust limit of %d sat: no close can pay that out, so it is not counted as funds.", ch.ChannelPoint, ch.LocalBalance, ch.DustLimit)
+		}
+	}
+	return st, nil
 }
 
 // ValidateAddress checks a bitcoin address for the configured network.

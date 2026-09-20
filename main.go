@@ -303,14 +303,17 @@ func printStatus(st *core.Status) {
 	fmt.Fprintf(out, "On-chain:        %d sat confirmed, %d sat unconfirmed\n", st.OnchainConfirmed, st.OnchainUnconfirmed)
 	fmt.Fprintf(out, "Open channels:   %d\n", len(st.Channels))
 	if len(st.Channels) > 0 {
-		fmt.Fprintln(out, "  A channel is still open. Send this output to Breez support at contact@breez.technology.")
+		fmt.Fprintln(out, "  These channels are still open. Email this output to Breez support: contact@breez.technology.")
 	}
 	for _, c := range st.Channels {
 		state := "active"
 		if !c.Active {
 			state = "inactive (peer offline)"
 		}
-		fmt.Fprintf(out, "  %s  local %d sat  remote %d sat  %s\n", c.ChannelPoint, c.LocalBalance, c.RemoteBalance, state)
+		if c.Dust {
+			state += fmt.Sprintf(", below its dust limit of %d sat: not counted", c.DustLimit)
+		}
+		fmt.Fprintf(out, "  %s  peer %s  local %d sat  remote %d sat  %s\n", c.ChannelPoint, c.Peer, c.LocalBalance, c.RemoteBalance, state)
 	}
 	fmt.Fprintf(out, "Pending closes:  %d\n", len(st.Pending))
 	for _, p := range st.Pending {

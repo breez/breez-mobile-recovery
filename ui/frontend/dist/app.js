@@ -306,11 +306,11 @@
   }
   function remainingText(sec) {
     if (sec == null || sec < 0) return "estimating";
-    if (sec < 60) return "under a minute";
+    if (sec < 60) return "<1 min";
     const m = Math.round(sec / 60);
-    if (m < 60) return m + " min";
+    if (m < 60) return "~" + m + " min";
     const h = Math.floor(m / 60), r = m % 60;
-    return h + " h" + (r ? " " + r + " min" : "");
+    return "~" + h + " h" + (r ? " " + r + " min" : "");
   }
   setInterval(() => {
     if (ui.screen !== "sync") return;
@@ -391,11 +391,13 @@
 
     const hasChannels = st.channels.length > 0;
     const hasOnchain = st.onchainConfirmed > 0;
+    $("#btn-copy-channels").classList.toggle("hidden", !hasChannels);
+    $("#btn-copy-channels").textContent = "Copy the list";
     $("#btn-sweep").classList.toggle("hidden", !hasOnchain);
 
     let advice;
     if (hasChannels) {
-      advice = "A channel is still open. Save the log and send it to Breez support at contact@breez.technology.";
+      advice = "These channels are still open. Copy the list and email it to Breez support: contact@breez.technology.";
     } else if (st.pending.length) {
       advice = "Channels are closing. Leave this window open, or come back later, until the funds show as ready to send. Then send the on-chain balance.";
     } else if (hasOnchain) {
@@ -414,7 +416,7 @@
       st.channels.forEach((c) => {
         const item = el("div", "item static");
         const main = el("div", "item-main");
-        main.appendChild(el("div", "item-title", fmtSat(c.localBalance) + " yours"));
+        main.appendChild(el("div", "item-title", fmtSat(c.localBalance) + " yours" + (c.dust ? ", too small to pay out" : "")));
         main.appendChild(el("div", "item-sub", c.channelPoint));
         item.appendChild(main);
         item.appendChild(el("span", "tag " + (c.active ? "ok" : "warn"), c.active ? "peer online" : "peer offline"));
@@ -676,6 +678,19 @@
     "prepare-sweep": prepareSweep,
     "broadcast-sweep": broadcastSweep,
     "copy-txid": () => api.CopyText(ui.lastTxid),
+    "copy-channels": async () => {
+      // What support needs to find the channels on the LSP's side.
+      const st = ui.status;
+      if (!st) return;
+      const lines = ["Breez Recovery " + ((ui.state && ui.state.version) || "") + ": channels still open", "Node " + st.nodeId, ""];
+      st.channels.forEach((c) => {
+        lines.push("Channel " + c.channelPoint);
+        lines.push("  peer " + c.peer + (c.active ? " (online)" : " (offline)"));
+        lines.push("  mine " + c.localBalance + " sat of " + c.capacity + " sat" + (c.dust ? " (below the dust limit of " + c.dustLimit + " sat)" : ""));
+      });
+      await api.CopyText(lines.join("\n"));
+      $("#btn-copy-channels").textContent = "Copied";
+    },
     "open-txid": () => api.OpenURL("https://mempool.space/tx/" + ui.lastTxid),
     "save-history": async () => { try { const p = await api.SaveHistory(); if (p) appendLog([new Date().toLocaleTimeString() + "  [recovery] history exported to " + p]); } catch (e) { showError(errMsg(e)); } },
     "save-log": async () => { try { const p = await api.SaveLog(); if (p) appendLog([new Date().toLocaleTimeString() + "  [recovery] log saved to " + p]); } catch (e) { showError(errMsg(e)); } },

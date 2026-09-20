@@ -175,8 +175,14 @@ Every value is rendered with textContent; keep it that way.
   the channel. lnd refuses only after the peer has reported the data loss
   (ChanStatusLocalDataLoss), so with the peer offline nothing checks it;
   on 2026-09-17 lnd signed and broadcast seven stale commitments without
-  a question. A channel the check still finds open is shown with a
-  request to send the log to Breez support. Do not add closing back.
+  a question. A channel the check still finds open is listed with a
+  request to email the list to Breez support and a Copy button. Do not
+  add closing back. Only the main LSP (031015a7...) served users and its
+  channels are all closed; Roy's own open ones are with an internal node.
+  Dust: Breez mobile sets its own dust limit and reserve to ZERO, so the
+  limit that decides a payout is the LSP's (354 sat, 573 on older
+  channels): `dustLimit` takes the larger of the two. A balance below it
+  is listed but not counted as funds.
 - Old nodes can make lnd's PendingChannels RPC fail ("unable to find
   arbitrator"). Status reports a warning instead of failing.
 - Restoring a DIFFERENT node over a work dir that already held one must
@@ -260,7 +266,8 @@ Every value is rendered with textContent; keep it that way.
 - Short text. One plain sentence explains a screen; delete anything that
   does not carry information. No hedges ("roughly", "about") and no made-up
   ranges: "10 to 40 minutes" was wrong, a real run took 90. A label is
-  "Time left".
+  "Time left"; its value carries a tilde ("~3 min", "<1 min"), asked for by
+  Roy 2026-09-20. Funds tiles are "In channels", "Pending", "On-chain".
 - No em dashes in UI copy or docs.
 - The Log panel and Save log are the support channel: anything a user
   would need to report must be in there.

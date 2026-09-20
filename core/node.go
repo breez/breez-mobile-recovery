@@ -427,6 +427,26 @@ func (n *node) pending(ctx context.Context) (*lnrpc.PendingChannelsResponse, err
 	return n.client.PendingChannels(ctx, &lnrpc.PendingChannelsRequest{})
 }
 
+// dustLimit is the smallest balance a close of this channel pays out: the
+// larger of the two sides' dust limits. Breez mobile sets its own limit to
+// zero, but the LSP's limit (354 sat, 573 on older channels) is the one
+// that counts: the LSP's commitment drops anything below it, and a smaller
+// output would not relay anyway. Seen in Roy's backups: balances of 999
+// and 600 sat got an output when the LSP closed, 500, 172 and 100 did not.
+func dustLimit(c *lnrpc.Channel) int64 {
+	local := int64(c.GetLocalConstraints().GetDustLimitSat())
+	remote := int64(c.GetRemoteConstraints().GetDustLimitSat())
+	if remote > local {
+		return remote
+	}
+	return local
+}
+
+// isDust reports whether the channel's balance can never be paid out.
+func isDust(c *lnrpc.Channel) bool {
+	return c.LocalBalance < dustLimit(c)
+}
+
 func (n *node) status(ctx context.Context, checks *channelChecks) (*Status, error) {
 	info, err := n.info(ctx)
 	if err != nil {
@@ -466,8 +486,15 @@ func (n *node) status(ctx context.Context, checks *channelChecks) (*Status, erro
 				LocalBalance:  c.LocalBalance,
 				RemoteBalance: c.RemoteBalance,
 				Active:        c.Active,
+				Dust:          isDust(c),
+				DustLimit:     dustLimit(c),
 			})
-			st.InChannels += c.LocalBalance
+			// A balance below the channel's dust limit can never be paid
+			// out: every close drops an output that small. The channel is
+			// listed, it is open after all, but it is not funds.
+			if !isDust(c) {
+				st.InChannels += c.LocalBalance
+			}
 		case verdictSpent:
 			st.ClosedOnChain = append(st.ClosedOnChain, v.spent)
 		case verdictForeign:

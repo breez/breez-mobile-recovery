@@ -216,12 +216,12 @@
             <div class="stat-sub" id="stat-channels-sub"></div>
           </div>
           <div class="stat">
-            <div class="stat-label">Closing, not yet spendable</div>
+            <div class="stat-label">Pending</div>
             <div class="stat-value" id="stat-pending">0 sat</div>
             <div class="stat-sub" id="stat-pending-sub"></div>
           </div>
           <div class="stat">
-            <div class="stat-label">On-chain, ready to send</div>
+            <div class="stat-label">On-chain</div>
             <div class="stat-value" id="stat-onchain">0 sat</div>
             <div class="stat-sub" id="stat-onchain-sub"></div>
           </div>
@@ -230,6 +230,7 @@
         <div id="wallet-lists"></div>
         <div class="actions">
           <button class="btn btn-ghost" type="button" data-action="go-history">History</button>
+          <button class="btn btn-primary" type="button" data-action="copy-channels" id="btn-copy-channels">Copy the list</button>
           <button class="btn btn-primary" type="button" data-action="go-sweep" id="btn-sweep">Send on-chain balance</button>
         </div>
         <div class="muted small" id="wallet-node"></div>
