@@ -83,6 +83,7 @@ func main() {
 	flag.StringVar(&cfg.FeeURL, "feeurl", cfg.FeeURL, "fee estimator URL lnd uses with neutrino")
 	flag.StringVar(&cfg.ICloudAPIToken, "icloud-token", cfg.ICloudAPIToken, "CloudKit API token for iCloud backups")
 	flag.StringVar(&cfg.Peers, "peer", "", "comma-separated bitcoin peers with compact filters; empty = the Breez nodes")
+	flag.StringVar(&cfg.LogLevel, "loglevel", cfg.LogLevel, "lnd log level, for support: info, debug, or per subsystem like NTFN=debug,CNCT=debug,BTCN=debug")
 	flag.BoolVar(&verbose, "v", false, "forward node logs and notifications to stderr")
 	flag.Usage = usage
 	flag.Parse()
@@ -314,6 +315,13 @@ func printStatus(st *core.Status) {
 			state += fmt.Sprintf(", below its dust limit of %d sat: not counted", c.DustLimit)
 		}
 		fmt.Fprintf(out, "  %s  peer %s  local %d sat  remote %d sat  %s\n", c.ChannelPoint, c.Peer, c.LocalBalance, c.RemoteBalance, state)
+	}
+	for _, c := range st.ClosedOnChain {
+		line := fmt.Sprintf("  %s  closed on chain in %s", c.ChannelPoint, c.ClosingTxID)
+		if c.Collect > 0 {
+			line += fmt.Sprintf(", %d sat being collected", c.Collect)
+		}
+		fmt.Fprintln(out, line)
 	}
 	fmt.Fprintf(out, "Pending closes:  %d\n", len(st.Pending))
 	for _, p := range st.Pending {

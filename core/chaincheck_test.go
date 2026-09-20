@@ -193,3 +193,45 @@ func TestIsDust(t *testing.T) {
 		t.Error("no dust limit known, yet called dust")
 	}
 }
+
+// What a close paid this app counts as money to collect only while nobody
+// has spent it: a backup taken before the phone swept a close must not show
+// that money again.
+func TestCollectOnlyWhatIsStillThere(t *testing.T) {
+	fundingScript := []byte{0x00, 0x20, 0x01}
+	toUs := []byte{0x00, 0x14, 0x0a}
+	funding := fundingTx(fundingScript)
+	op := wire.OutPoint{Hash: funding.TxHash(), Index: 0}
+
+	closing := wire.NewMsgTx(2)
+	closing.AddTxIn(&wire.TxIn{PreviousOutPoint: op})
+	closing.AddTxOut(&wire.TxOut{Value: 94317, PkScript: []byte{0x00, 0x20, 0x07}}) // the peer's side
+	closing.AddTxOut(&wire.TxOut{Value: 999, PkScript: toUs})
+	sweep := spendOf(wire.OutPoint{Hash: closing.TxHash(), Index: 1})
+
+	newState := func(script []byte) *fundingState {
+		return &fundingState{f: channelFunding{chanPoint: "aa:0", outpoint: op, pkScript: fundingScript, toUsScript: script, heightHint: 700000}}
+	}
+	run := func(st *fundingState, blocks ...[]*wire.MsgTx) channelVerdict {
+		for i, txs := range blocks {
+			applyBlock([]*fundingState{st}, &wire.MsgBlock{Transactions: txs}, 700000+uint32(i))
+		}
+		return st.verdict()
+	}
+
+	if v := run(newState(toUs), []*wire.MsgTx{funding}, []*wire.MsgTx{closing}); v.verdict != verdictSpent || v.spent.Collect != 999 {
+		t.Errorf("paid and unspent: %q collect %d, want spent 999", v.verdict, v.spent.Collect)
+	}
+	if v := run(newState(toUs), []*wire.MsgTx{funding}, []*wire.MsgTx{closing}, []*wire.MsgTx{sweep}); v.spent.Collect != 0 {
+		t.Errorf("already swept: collect %d, want 0", v.spent.Collect)
+	}
+	if v := run(newState(toUs), []*wire.MsgTx{funding}, []*wire.MsgTx{closing, sweep}); v.spent.Collect != 0 {
+		t.Errorf("swept in the closing block: collect %d, want 0", v.spent.Collect)
+	}
+	if v := run(newState(nil), []*wire.MsgTx{funding}, []*wire.MsgTx{closing}); v.spent.Collect != 0 {
+		t.Errorf("no derivable script: collect %d, want 0", v.spent.Collect)
+	}
+	if v := run(newState([]byte{0x00, 0x14, 0x0b}), []*wire.MsgTx{funding}, []*wire.MsgTx{closing}); v.spent.Collect != 0 {
+		t.Errorf("close paid another key: collect %d, want 0", v.spent.Collect)
+	}
+}

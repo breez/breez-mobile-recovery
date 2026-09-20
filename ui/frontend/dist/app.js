@@ -352,7 +352,6 @@
     }
     if (rescan) {
       $("#sync-blocks").textContent = unknown ? "" : "about block " + p.height.toLocaleString("en-US") + " of " + p.target.toLocaleString("en-US");
-      $("#live-found").textContent = String(p.found || 0);
       $("#live-through").textContent = p.throughTime ? new Date(p.throughTime * 1000).toLocaleDateString(undefined, { dateStyle: "medium" }) : "not yet";
     } else {
       $("#sync-blocks").textContent = p.height ? "block " + p.height.toLocaleString("en-US") + " of " + (p.stage === "channels" ? "" : "about ") + p.target.toLocaleString("en-US") : "";
@@ -385,7 +384,8 @@
     $("#stat-channels").textContent = fmtSat(st.inChannels);
     $("#stat-channels-sub").textContent = st.channels.length ? st.channels.length + " channel" + (st.channels.length > 1 ? "s" : "") + (fmtBtc(st.inChannels) ? ", " + fmtBtc(st.inChannels) : "") : "no open channels";
     $("#stat-pending").textContent = fmtSat(st.inPending);
-    $("#stat-pending-sub").textContent = st.pending.length ? st.pending.length + " close" + (st.pending.length > 1 ? "s" : "") + " in progress" : "";
+    const collecting = (st.closedOnChain || []).filter((c) => c.collect > 0).length;
+    $("#stat-pending-sub").textContent = st.pending.length ? st.pending.length + " close" + (st.pending.length > 1 ? "s" : "") + " in progress" : (collecting ? "being collected" : "");
     $("#stat-onchain").textContent = fmtSat(st.onchainConfirmed);
     $("#stat-onchain-sub").textContent = st.onchainUnconfirmed ? "+ " + fmtSat(st.onchainUnconfirmed) + " unconfirmed" : (fmtBtc(st.onchainConfirmed) || "");
 
@@ -398,6 +398,8 @@
     let advice;
     if (hasChannels) {
       advice = "These channels are still open. Copy the list and email it to Breez support: contact@breez.technology.";
+    } else if ((st.closedOnChain || []).some((c) => c.collect > 0)) {
+      advice = "Your channel was closed and its funds are being collected. This can take a while; keep the app open. They then show as On-chain, ready to send.";
     } else if (st.pending.length) {
       advice = "Channels are closing. Leave this window open, or come back later, until the funds show as ready to send. Then send the on-chain balance.";
     } else if (hasOnchain) {
@@ -430,7 +432,7 @@
       st.closedOnChain.forEach((c) => {
         const item = el("div", "item static");
         const main = el("div", "item-main");
-        main.appendChild(el("div", "item-title", "Closed after this backup was taken"));
+        main.appendChild(el("div", "item-title", c.collect > 0 ? fmtSat(c.collect) + " being collected" : "Closed after this backup was taken"));
         main.appendChild(el("div", "item-sub", c.closingTxid));
         item.appendChild(main);
         item.appendChild(txLink(c.closingTxid));

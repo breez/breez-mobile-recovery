@@ -113,6 +113,28 @@ var (
 	newBlockRe      = regexp.MustCompile(`NTFN: New block: height=(\d+)`)
 )
 
+// waitHeadersSynced returns once neutrino has logged that its headers and
+// filter headers reached the chain tip.
+func waitHeadersSynced(ctx context.Context, timeout time.Duration) error {
+	deadline := time.Now().Add(timeout)
+	for {
+		rescan.Lock()
+		tip := rescan.tip
+		rescan.Unlock()
+		if tip > 0 {
+			return nil
+		}
+		if time.Now().After(deadline) {
+			return errors.New("the bitcoin chain did not finish catching up; check the connection and start again")
+		}
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-time.After(time.Second):
+		}
+	}
+}
+
 // trackRescan feeds a node log line to the rescan tracker. It returns true
 // for the per-block trace line, which is progress data rather than
 // something to show in the log.
@@ -497,6 +519,12 @@ func (n *node) status(ctx context.Context, checks *channelChecks) (*Status, erro
 			}
 		case verdictSpent:
 			st.ClosedOnChain = append(st.ClosedOnChain, v.spent)
+			// What the close paid this app and nobody spent yet is money
+			// on its way: lnd still lists the channel as open, so it has
+			// not collected it. Once it has, the channel leaves this list
+			// and the amount shows through lnd's own pending and
+			// on-chain balances.
+			st.InPending += v.spent.Collect
 		case verdictForeign:
 			st.Warnings = append(st.Warnings, "channel "+c.ChannelPoint+" belongs to another node and is left alone")
 		default:

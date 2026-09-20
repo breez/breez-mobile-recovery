@@ -547,6 +547,18 @@ func (c *Core) StartNode(ctx context.Context) error {
 	if _, err := os.Stat(marker); err == nil {
 		return nil
 	}
+	// lnd must not start far behind the chain tip. Started at the bootstrap
+	// checkpoint (seen: block 812,000 of 967,857) its chain notifier walks
+	// every block up to the tip downloading full blocks, 4 a second, and
+	// only acts on a channel close once it gets there: about 10 hours, with
+	// the closed channel's funds invisible meanwhile. Started at the tip
+	// there is nothing to walk and old closes are found through the filter
+	// scan. The headers take about a minute; the next start is the one that
+	// counts, so wait for them here.
+	c.progressf("Catching up with the bitcoin chain before the restart...")
+	if err := waitHeadersSynced(ctx, 15*time.Minute); err != nil {
+		return err
+	}
 	c.progressf("Preparing addresses to check, so funds received after the last backup are found too...")
 	if err := n.extendAddresses(ctx, c.progressf); err != nil {
 		return err
