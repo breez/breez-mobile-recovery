@@ -13,7 +13,7 @@ Both reuse the breez library unchanged: the same restore code and the same
 lnd fork the mobile app runs. Builds for macOS, Windows and Linux.
 
 ```
-core/      the recovery logic (cloud sign-in, restore, node, close, sweep)
+core/      the recovery logic (cloud sign-in, restore, node, channel check, sweep)
 ui/        the desktop app (Wails: Go + a small HTML frontend)
 main.go    the command line tool
 ```
@@ -34,13 +34,11 @@ counts once a real backup went through the app on that OS. Steps:
 1. Sign in and list the backups
 2. Restore (with the backup phrase where the backup is encrypted)
 3. Sync to the chain tip and see the funds screen with the right balances
-4. Close channels cooperatively to an address
-5. Force close a channel whose peer is offline, wait for maturity
-6. Send the on-chain balance out
+4. Send the on-chain balance out
 
 | Backup source | Linux | macOS | Windows |
 |---|---|---|---|
-| Google Drive | steps 1 to 6, roys, 2026-09-17 (node from 2019, 938 addresses: first history check took 90 min; step 6 sent 15,370 sat plus a 351 sat fee, confirmed) | not run | not run |
+| Google Drive | steps 1 to 4, roys, 2026-09-17 (node from 2019, 938 addresses: first history check took 90 min; step 4 sent 15,370 sat plus a 351 sat fee, confirmed) | not run | not run |
 | iCloud | not run | not run | not run |
 | Backup file | steps 2 and 3 on a fresh node with no funds, 2026-09-16 | not run | not run |
 
@@ -49,8 +47,8 @@ Update the table in the same pull request as any fix the run produced.
 ## How the Breez app backup works
 
 * The backup is a zip of three files: lnd's `wallet.db` and `channel.db`
-  plus `breez.db`. It is the full channel state, so the restored node can
-  close channels on its own.
+  plus `breez.db`. It is the channel state as of the backup, which can be
+  older than the state the phone reached afterwards.
 * The backup phrase (12 or 24 words) is only the encryption key of that zip.
   It is **not** the lnd seed. Without the backup files the phrase restores
   nothing.
@@ -88,12 +86,12 @@ One window, one step at a time:
    while: it scans the chain from the wallet's birthday.
 7. **Channel check.** The last sync stage. A backup is a snapshot: a channel
    that closed after it was taken still looks open in it. Before any channel
-   counts as funds or can be closed, the node checks that this backup's
+   counts as funds, the node checks that this backup's
    wallet holds the channel's key and that the channel's funding output is
    on the bitcoin chain, unspent. It asks its own bitcoin peers, nobody
    else. A channel that closed is listed under "Closed on chain" with its
    closing transaction; a channel that fails the check is left alone.
-   Measured: 500 to 1,100 blocks a second, 10 minutes for channels from 2020.
+   Measured: 10 minutes for channels opened in 2020, less for newer ones.
 8. **Your funds.** Balances in channels, in pending closes and on-chain,
    with the channel list and a hint about the next step. **History** is one
    list of everything that moved money in or out of the app, newest first:
@@ -103,10 +101,13 @@ One window, one step at a time:
    transaction. Totals at the top: received, sent, fees, the total of the
    list, and what the app holds now. **Export** saves the list as a CSV
    file you can open in a spreadsheet.
-9. **Close channels and withdraw** to an address. Cooperative closes pay the
-   address directly. Channels whose peer is offline are skipped and can be
-   force closed (funds mature after the channel delay, up to ~720 blocks).
-10. **Send the on-chain balance** to an address with a fee choice, then the
+   The tool closes no channels. Breez closed its channels with the app's
+   users from its side, so the funds of a restored app arrive on-chain, and
+   closing from a backup is dangerous: a backup can hold an old channel
+   state, and publishing it lets the peer take the whole channel. A
+   channel that is still open is shown with a request to send the log to
+   Breez support (contact@breez.technology).
+9. **Send the on-chain balance** to an address with a fee choice, then the
    transaction id with a link to mempool.space.
 
 The **Log** button opens a panel with every tool message and the node's
@@ -180,8 +181,6 @@ recovery restore --zip backup.zip --mnemonic "..."  # from a backup file
 recovery backups                                    # backups restored on this computer, * = in use
 recovery use <name>                                 # continue with another restored backup
 recovery status                                     # start node, sync, check channels, print balances
-recovery close --address bc1...                     # cooperative close of all channels
-recovery close --address bc1... --force             # force close channels whose peer is gone
 recovery sweep --address bc1...                     # send the on-chain balance out
 recovery history                                    # every payment, close and on-chain move, with totals
 recovery history --json                             # the same as JSON, plus the raw app payment list
@@ -196,8 +195,8 @@ stderr).
 
 The defaults are the production values from the `breez.conf` and `lnd.conf`
 bundled in the released APK (`assets/flutter_assets/conf`). The LSP token
-is not bundled; it is only needed for LSP features, not for closing
-channels or sweeping. Bake it in with
+is not bundled; it is only needed for LSP features, not for syncing or
+sweeping. Bake it in with
 `-X github.com/breez/breez-mobile-recovery/core.LSPToken=...` if wanted.
 
 ## Security notes

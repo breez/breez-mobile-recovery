@@ -137,9 +137,16 @@ in the balances or is ever closed:
 3. Anything the check cannot positively confirm (output not found, no
    usable height, not checked yet) is left alone and reported.
 
-The app closes channels one at a time itself, only those with the verdict
-"open". A failure of the check is an error and nothing is closed. Nothing
-is asked of a third party.
+**No closing at all** (decided 2026-09-20). Breez closed its channels
+with the app's users from its side, so the funds of a restored app arrive
+on-chain and the tool only needs to send them out. Cooperative close,
+force close and the closing lncli commands are removed. This also ends
+the risk below for good: a force close broadcasts the backup's
+commitment, and if the phone used the channel after its last backup the
+peer can take the whole channel. lnd refuses only once the peer has
+reported the data loss, and force close was offered exactly when the peer
+was offline. A channel the check still finds open is shown with a request
+to send the log to Breez support.
 
 **One folder per backup** (`core/dirs.go`). The crash in Finding 1 came
 from two backups sharing one folder: the second inherited the first one's
@@ -204,22 +211,17 @@ on copies: two backup files side by side, a repeated restore refused and
 then moved aside, an alpha.25 folder moved into `backups/` and its node
 started, synced and shown from there.
 
-Not verified: the "Closed on chain" list and the refusal to close have
-been exercised through the code paths and the mock, not yet on screen with
-a real node that has such channels; the wallet key check has run offline
+Not verified: the "Closed on chain" list has been exercised through the
+code paths and the mock, not yet on screen with a real node that has such
+channels; the wallet key check has run offline
 against the databases, not through `walletrpc.DeriveKey` on a live node
 with a foreign channel.
 
 ## Open
 
-1. A force close broadcasts the backup's commitment. If the phone used the
-   channel after its last backup, that commitment is revoked and the peer
-   can take the whole channel. lnd refuses only once the peer has told it
-   the state is stale, and force close is offered exactly when the peer is
-   offline. The channel check does not cover this. Product decision needed.
-2. The library's nil-stream panic (`account/payments.go:1310`): any lnd
+1. The library's nil-stream panic (`account/payments.go:1310`): any lnd
    startup failure becomes a process crash. Issue or PR on breez/breez.
-3. The backup picker could group snapshots that carry the same channels
+2. The backup picker could group snapshots that carry the same channels
    and steer to the one whose wallet can sign them.
 
 ## How to reproduce the checks

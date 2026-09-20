@@ -7,8 +7,7 @@
 //	recovery snapshots                         # sign in to Google, list backups
 //	recovery restore --node-id <id> --mnemonic "word1 ... word24"
 //	recovery status                            # start node, wait for sync, print balances
-//	recovery close --address bc1...            # cooperative close of all channels
-//	recovery sweep --address bc1...            # send remaining on-chain balance
+//	recovery sweep --address bc1...            # send the on-chain balance
 //
 // iCloud backups: add --icloud to snapshots and restore. A backup zip on
 // disk: recovery restore --zip backup.zip --mnemonic "...".
@@ -64,7 +63,6 @@ Commands:
   backups     List the backups restored on this computer
   use         Continue with another restored backup: recovery use <name>
   status      Start the node, wait for chain sync and print balances and channels
-  close       Cooperatively close all channels, sending funds to --address
   sweep       Send the whole on-chain wallet balance to --address
   history     Every payment sent or received, channel closes and on-chain moves, with totals
   lncli       Run an lncli command against the restored node (escape hatch)
@@ -121,8 +119,6 @@ func main() {
 		err = c.UseBackup(args[0])
 	case "status":
 		err = cmdStatus(ctx, c, args)
-	case "close":
-		err = cmdClose(ctx, c, args)
 	case "sweep":
 		err = cmdSweep(ctx, c, args)
 	case "history":
@@ -232,7 +228,7 @@ func cmdRestore(ctx context.Context, c *core.Core, args []string) error {
 	if err != nil {
 		return err
 	}
-	fmt.Fprintln(out, "Next: 'recovery status' to sync and see balances, then 'recovery close --address <btc address>'.")
+	fmt.Fprintln(out, "Next: 'recovery status' to sync and see balances, then 'recovery sweep --address <btc address>'.")
 	return nil
 }
 
@@ -291,7 +287,6 @@ func cmdStatus(ctx context.Context, c *core.Core, args []string) error {
 	if err := startAndSync(ctx, c); err != nil {
 		return err
 	}
-	c.WaitChannelsActive(ctx, 30*time.Second)
 	st, err := c.Status(ctx)
 	if err != nil {
 		return err
@@ -307,6 +302,9 @@ func printStatus(st *core.Status) {
 	fmt.Fprintf(out, "Peers:           %d\n", st.Peers)
 	fmt.Fprintf(out, "On-chain:        %d sat confirmed, %d sat unconfirmed\n", st.OnchainConfirmed, st.OnchainUnconfirmed)
 	fmt.Fprintf(out, "Open channels:   %d\n", len(st.Channels))
+	if len(st.Channels) > 0 {
+		fmt.Fprintln(out, "  A channel is still open. Send this output to Breez support at contact@breez.technology.")
+	}
 	for _, c := range st.Channels {
 		state := "active"
 		if !c.Active {
@@ -329,39 +327,6 @@ func printStatus(st *core.Status) {
 		fmt.Fprintf(out, "Warning:         %s\n", w)
 	}
 	fmt.Fprintln(out)
-}
-
-// ---- close ----------------------------------------------------------------
-
-func cmdClose(ctx context.Context, c *core.Core, args []string) error {
-	fs := flag.NewFlagSet("close", flag.ExitOnError)
-	address := fs.String("address", "", "bitcoin address that receives the channel funds")
-	force := fs.Bool("force", false, "force close channels whose peer is offline (funds locked up to ~720 blocks)")
-	fs.Parse(args)
-	if *address == "" {
-		return errors.New("--address is required")
-	}
-	if err := core.ValidateAddress(*address); err != nil {
-		return fmt.Errorf("invalid address: %w", err)
-	}
-	if err := startAndSync(ctx, c); err != nil {
-		return err
-	}
-	c.WaitChannelsActive(ctx, 90*time.Second)
-	res, err := c.CloseChannels(ctx, *address, *force)
-	if err != nil {
-		return err
-	}
-	if len(res.Channels) == 0 {
-		fmt.Fprintln(out, "No open channels. Check 'recovery status' for pending closes, then 'recovery sweep'.")
-		return nil
-	}
-	if res.Skipped > 0 && !*force {
-		fmt.Fprintf(out, "\n%d channel(s) could not be closed cooperatively. Re-run with --force to force close them.\n", res.Skipped)
-		fmt.Fprintln(out, "Force closed funds become spendable after the channel's delay (up to ~720 blocks, about five days).")
-	}
-	fmt.Fprintln(out, "Done. Run 'recovery status' later to watch the closes confirm, then 'recovery sweep --address ...'.")
-	return nil
 }
 
 // ---- sweep ----------------------------------------------------------------

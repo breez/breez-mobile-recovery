@@ -16,7 +16,7 @@ happening and every long step must show progress.
 
 ```
 core/      all logic. Config, Reporter interface, cloud sign-in, restore,
-           node start, sync progress, status, close, sweep.
+           node start, sync progress, channel check, status, sweep.
 main.go    CLI over core (recovery-cli).
 ui/        Wails v2 desktop app over core. app.go = methods bound to JS,
            main.go = window setup. Frontend is plain HTML/CSS/JS in
@@ -136,10 +136,8 @@ Every value is rendered with textContent; keep it that way.
 - Channel check (core/chaincheck.go). lnd's channel list is not proof of
   funds: a backup is a snapshot, and a channel that closed later still
   looks open until lnd's own spend scan finishes, which takes long after a
-  restore. Roy force closed seven such channels on 2026-09-17. Rules: only
-  a channel with the verdict "open" counts in the balances and is ever
-  closed, and the app closes channels one by one itself (the library's
-  `CloseChannels` acts on every channel lnd has). Open means the wallet
+  restore. Roy force closed seven such channels on 2026-09-17. Rule: only
+  a channel with the verdict "open" counts in the balances. Open means the wallet
   derives the funding key at the channel's KeyLocator AND neutrino found
   the funding output, with the expected script, unspent up to the tip.
   Anything else, including "not found" and "not checked", is left alone.
@@ -159,11 +157,18 @@ Every value is rendered with textContent; keep it that way.
   carries the handler. `TestScanFundingOutputsLive` runs the scan against
   the real chain on copies of channel databases (skipped unless its
   environment is set).
-- Open risk, not solved: a force close broadcasts the backup's commitment.
-  If the phone kept using the channel after its last backup, that
-  commitment is revoked and the peer can take the channel. lnd refuses only
-  after it has talked to the peer (ChanStatusLocalDataLoss); with the peer
-  offline, which is when force close is offered, nothing checks it.
+- The tool closes nothing (decided by Roy 2026-09-20): no cooperative
+  close, no force close, and `recovery lncli` refuses closechannel,
+  closeallchannels and abandonchannel. Breez closed its channels with the
+  app's users from its side, so funds arrive on-chain and are sent out
+  with the sweep. Closing from a backup is dangerous: a force close
+  broadcasts the backup's commitment, and if the phone used the channel
+  after its last backup that commitment is revoked and the peer can take
+  the channel. lnd refuses only after the peer has reported the data loss
+  (ChanStatusLocalDataLoss), so with the peer offline nothing checks it;
+  on 2026-09-17 lnd signed and broadcast seven stale commitments without
+  a question. A channel the check still finds open is shown with a
+  request to send the log to Breez support. Do not add closing back.
 - Old nodes can make lnd's PendingChannels RPC fail ("unable to find
   arbitrator"). Status reports a warning instead of failing.
 - Restoring a DIFFERENT node over a work dir that already held one must

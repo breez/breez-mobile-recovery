@@ -471,8 +471,6 @@ func (a *App) StartAndSync() (*core.Status, error) {
 		}); err != nil {
 			return err
 		}
-		wruntime.EventsEmit(a.ctx, "sync", core.SyncProgress{Stage: "peers", Percent: -1, Remaining: -1, Message: "Connecting to channel peers..."})
-		c.WaitChannelsActive(ctx, 30*time.Second)
 		st, err = c.Status(ctx)
 		return err
 	})
@@ -574,20 +572,6 @@ func (a *App) SaveHistory() (string, error) {
 // ValidateAddress checks a bitcoin address.
 func (a *App) ValidateAddress(address string) error {
 	return core.ValidateAddress(strings.TrimSpace(address))
-}
-
-// CloseChannels closes every channel with the funds going to address.
-func (a *App) CloseChannels(address string, force bool) (*core.CloseResult, error) {
-	var res *core.CloseResult
-	err := a.run("close channels", func(ctx context.Context) error {
-		c := a.c()
-		wruntime.EventsEmit(a.ctx, "progress", "Giving channel peers a moment to connect...")
-		c.WaitChannelsActive(ctx, 60*time.Second)
-		var err error
-		res, err = c.CloseChannels(ctx, strings.TrimSpace(address), force)
-		return err
-	})
-	return res, err
 }
 
 // PrepareSweep builds the sweep transactions without broadcasting.
