@@ -115,6 +115,27 @@ Every value is rendered with textContent; keep it that way.
   check (a second multi-hour pass) and slowed matching from 76 to 48
   blocks/s, so it is 50 since alpha.21. Any change to the address set
   forces a rescan on existing restores: state that cost before making one.
+- KNOWN FLAW, not fixed yet (found by the backup matrix 2026-09-21): the
+  look-ahead derives its window with NextAddr, which advances the wallet's
+  address counter, so the first address lnd hands out afterwards is the
+  one right past the window. Funds a restore collects (lnd's sweep of a
+  closed channel) therefore land exactly where a LATER fresh restore of the
+  same backup does not look. Proven: Roy's 864 sat sit at
+  bc1p8x83...6uy, and a fresh restore of the same backup returns that very
+  address as its next one and shows 0 sat. No window size cures it: a
+  restore's next address is always just outside its own window. Nothing is
+  lost (the first folder holds the funds, the keys derive from the backup)
+  but a user who restores, lets lnd collect, deletes the folder before
+  sending and restores again would see nothing. The cure is a gap limit:
+  keep looking past the last used address. lnd's own recovery window is
+  only reachable through the wallet unlocker, which the library does not
+  use (noseedbackup). Plan: derive the next N addresses per branch offline
+  from the account xpubs (walletrpc ListAccounts), add their scripts to
+  the filter walk in chaincheck.go from the backup's height on, and when
+  one was paid, derive up to it with NextAddr, write FORCE_RESCAN and
+  restart; repeat until nothing beyond the window is found. Until then:
+  do not delete a backup's folder before its funds are sent out (the
+  README says so).
 - Rescan progress persists in wallet.db, a restart resumes where it was.
   A `FORCE_RESCAN` file in the work folder makes the library drop the
   transaction store and rescan from the birthday; handy for testing.
