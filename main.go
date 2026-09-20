@@ -133,11 +133,18 @@ func main() {
 		usage()
 		os.Exit(2)
 	}
-	c.Stop()
+	// The library's stop can hang after lnd itself is down (seen on several
+	// restored nodes: the command printed its result and never returned).
+	// lnd has closed its databases by then, so give it a bounded wait and
+	// exit; the exit releases whatever is left, as the desktop app does.
+	if !c.StopWithin(30 * time.Second) {
+		fmt.Fprintln(os.Stderr, "the node did not stop cleanly; exiting")
+	}
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "error:", err)
 		os.Exit(1)
 	}
+	os.Exit(0)
 }
 
 // ---- snapshots ------------------------------------------------------------
