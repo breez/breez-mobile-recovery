@@ -235,3 +235,29 @@ func TestCollectOnlyWhatIsStillThere(t *testing.T) {
 		t.Errorf("close paid another key: collect %d, want 0", v.spent.Collect)
 	}
 }
+
+// Seen on a real node: the phone swept two closes after the backup; the
+// restored lnd swept them again, the network refused, and lnd showed 31,264
+// sat "unconfirmed" from two generations of a transaction that cannot
+// confirm.
+func TestDeadUnconfirmed(t *testing.T) {
+	prev := func(ops ...string) []*lnrpc.PreviousOutPoint {
+		var out []*lnrpc.PreviousOutPoint
+		for _, op := range ops {
+			out = append(out, &lnrpc.PreviousOutPoint{Outpoint: op})
+		}
+		return out
+	}
+	phoneSweep := &lnrpc.Transaction{TxHash: "phone", NumConfirmations: 25000, Amount: 15721, PreviousOutpoints: prev("closeA:0", "closeB:0")}
+	lndSweep1 := &lnrpc.Transaction{TxHash: "lnd1", NumConfirmations: 0, Amount: 15632, PreviousOutpoints: prev("closeA:0", "closeB:0")}
+	lndSweep2 := &lnrpc.Transaction{TxHash: "lnd2", NumConfirmations: 0, Amount: 15632, PreviousOutpoints: prev("closeA:0", "closeB:0")}
+	incoming := &lnrpc.Transaction{TxHash: "deposit", NumConfirmations: 0, Amount: 5000, PreviousOutpoints: prev("someone:1")}
+	liveSweep := &lnrpc.Transaction{TxHash: "live", NumConfirmations: 0, Amount: 864, PreviousOutpoints: prev("closeC:0")}
+
+	if got := deadUnconfirmed([]*lnrpc.Transaction{phoneSweep, lndSweep1, lndSweep2, incoming, liveSweep}); got != 31264 {
+		t.Errorf("dead unconfirmed %d, want 31264", got)
+	}
+	if got := deadUnconfirmed([]*lnrpc.Transaction{incoming, liveSweep}); got != 0 {
+		t.Errorf("live unconfirmed money counted as dead: %d", got)
+	}
+}

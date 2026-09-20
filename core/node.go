@@ -490,6 +490,19 @@ func (n *node) status(ctx context.Context, checks *channelChecks) (*Status, erro
 	}
 	st.OnchainConfirmed = wb.ConfirmedBalance
 	st.OnchainUnconfirmed = wb.UnconfirmedBalance
+	// lnd can hold unconfirmed transactions that will never confirm: it
+	// sweeps a closed channel's output that the phone already swept after
+	// the backup, the network rejects the double spend, and a neutrino node
+	// never hears of it, so lnd keeps the transaction and fee-bumps it every
+	// block. That is not money on its way.
+	if wb.UnconfirmedBalance > 0 {
+		txs, err := n.client.GetTransactions(ctx, &lnrpc.GetTransactionsRequest{})
+		if err != nil {
+			st.Warnings = append(st.Warnings, "unconfirmed balance not checked: "+err.Error())
+		} else if st.OnchainUnconfirmed -= deadUnconfirmed(txs.Transactions); st.OnchainUnconfirmed < 0 {
+			st.OnchainUnconfirmed = 0
+		}
+	}
 
 	chans, err := n.openChannels(ctx)
 	if err != nil {
@@ -582,6 +595,34 @@ func (n *node) sweptCloses(ctx context.Context, pend *lnrpc.PendingChannelsRespo
 		return nil, err
 	}
 	return sweptBy(res.Transactions, want), nil
+}
+
+// deadUnconfirmed sums what unconfirmed wallet transactions would bring in
+// although they can never confirm: one of their inputs is already spent by
+// a confirmed wallet transaction.
+func deadUnconfirmed(txs []*lnrpc.Transaction) int64 {
+	spent := map[string]bool{}
+	for _, tx := range txs {
+		if tx.NumConfirmations < 1 {
+			continue
+		}
+		for _, prev := range tx.PreviousOutpoints {
+			spent[prev.Outpoint] = true
+		}
+	}
+	var dead int64
+	for _, tx := range txs {
+		if tx.NumConfirmations > 0 || tx.Amount <= 0 {
+			continue
+		}
+		for _, prev := range tx.PreviousOutpoints {
+			if spent[prev.Outpoint] {
+				dead += tx.Amount
+				break
+			}
+		}
+	}
+	return dead
 }
 
 // sweptBy returns the txids in want that a confirmed transaction spends.
