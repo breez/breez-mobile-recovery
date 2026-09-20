@@ -22,7 +22,7 @@ dir that already held the Mar 2026 one. Three separate problems came out of it:
    it. This came from Drive that way; the app did not mix anything.
 
 Problem 1 was released in alpha.25. Problems 2 and 3 are addressed by the
-channel check released in alpha.26, together with one folder per backup,
+channel check released in alpha.27, together with one folder per backup,
 which removes the cause of problem 1 rather than its symptom.
 
 ## Timeline (from the logs)
@@ -120,7 +120,7 @@ wallet, whose remainder (15,721 sat) Roy swept this morning. Whether the
 `02c6b28e…` wallet itself holds any on-chain coins is a separate question;
 the sync running now derives its addresses and would show them.
 
-## What the app does about it (alpha.26)
+## What the app does about it (alpha.27)
 
 **The channel check** (`core/chaincheck.go`). lnd's channel list is no
 longer taken as proof of funds. After sync and before anything is shown or
@@ -208,7 +208,7 @@ were found unspent at their real funding blocks, 758334 and 758364, where
 the first version would have started at block 16,000,000 and never
 returned. The folder layout was exercised with the CLI and the desktop app
 on copies: two backup files side by side, a repeated restore refused and
-then moved aside, an alpha.25 folder moved into `backups/` and its node
+then moved aside, an alpha.26 folder moved into `backups/` and its node
 started, synced and shown from there.
 
 Not verified: the "Closed on chain" list has been exercised through the

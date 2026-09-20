@@ -76,7 +76,7 @@ Every value is rendered with textContent; keep it that way.
   ignore the folder argument after the first call: a process is bound to
   the first folder the library was initialised on (`boundLibDir`).
 - One folder per backup (core/dirs.go): the work folder holds the sign-ins,
-  `current` and `backups/<node id or zip-hash>/`. Up to alpha.25 every
+  `current` and `backups/<node id or zip-hash>/`. Up to alpha.26 every
   restore landed in the one work folder, so a second backup inherited the
   first one's `channel.backup`, markers, chain files and logs (the
   2026-09-17 crash). Because of the binding above the library must not be

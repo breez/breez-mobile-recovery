@@ -24,7 +24,7 @@ import (
 //	backups/<name>/                          one restored backup: a complete node folder
 //
 // <name> is the node id for a cloud backup and "zip-<hash of the file>" for
-// a backup file. Releases up to alpha.25 kept a single node directly in the
+// a backup file. Releases up to alpha.26 kept a single node directly in the
 // work folder; loadLayout moves such a node into backups/ once.
 const (
 	backupsFolder = "backups"
