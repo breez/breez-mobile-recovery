@@ -3,6 +3,7 @@ package core
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"os"
 	"strings"
 	"testing"
@@ -12,7 +13,11 @@ import (
 	breezdb "github.com/breez/breez/db"
 	"github.com/btcsuite/btcd/chaincfg"
 	"github.com/btcsuite/btcd/txscript"
+	"github.com/btcsuite/btcwallet/waddrmgr"
+	"github.com/btcsuite/btcwallet/walletdb"
+	_ "github.com/btcsuite/btcwallet/walletdb/bdb"
 	"github.com/lightningnetwork/lnd/channeldb"
+	"github.com/lightningnetwork/lnd/lnrpc/walletrpc"
 )
 
 // TestScanFundingOutputsLive runs the chain scan against the real bitcoin
@@ -201,5 +206,150 @@ func TestToUsScriptLive(t *testing.T) {
 	t.Logf("%d closes paid this side, all matched", matched)
 	if matched == 0 {
 		t.Error("no close with a payout was checked")
+	}
+}
+
+// TestFollowTheMoneyLive proves, on the real chain, that funds a closed
+// channel's sweep paid to the wallet are found WITHOUT the gap search: no
+// address is in the filter match, the walk only watches the channels, and
+// the address is recognised in the block of the sweep. Read-only like the
+// test above, with the same BREEZ_LIVE_WORKDIR and BREEZ_LIVE_CHANDBS
+// (dirs with a copy of the BACKUP's channel.db), plus
+//
+//	BREEZ_LIVE_WALLETDB  a COPY of a wallet.db of the node: the account keys
+//	                     and address counters are read from it. A backup from
+//	                     before taproot has no taproot account until lnd has
+//	                     opened it once, so take a restored folder's file and
+//	                     set BREEZ_LIVE_FRESH=1 to count from zero as a fresh
+//	                     restore of that backup would
+//	BREEZ_LIVE_PAID      what must be found, e.g. "taproot receive:51"
+//	                     (branch name : one past the paid address)
+func TestFollowTheMoneyLive(t *testing.T) {
+	workDir := os.Getenv("BREEZ_LIVE_WORKDIR")
+	if workDir == "" || os.Getenv("BREEZ_LIVE_WALLETDB") == "" {
+		t.Skip("BREEZ_LIVE_WORKDIR or BREEZ_LIVE_WALLETDB not set")
+	}
+	wdb, err := walletdb.Open("bdb", os.Getenv("BREEZ_LIVE_WALLETDB"), true, time.Minute)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var branches []*addrBranch
+	err = walletdb.View(wdb, func(tx walletdb.ReadTx) error {
+		mgr, err := waddrmgr.Open(tx.ReadBucket([]byte("waddrmgr")), []byte("public"), &chaincfg.MainNetParams)
+		if err != nil {
+			return err
+		}
+		for scope, addrType := range map[waddrmgr.KeyScope]walletrpc.AddressType{
+			waddrmgr.KeyScopeBIP0084: walletrpc.AddressType_WITNESS_PUBKEY_HASH,
+			waddrmgr.KeyScopeBIP0086: walletrpc.AddressType_TAPROOT_PUBKEY,
+		} {
+			scoped, err := mgr.FetchScopedKeyManager(scope)
+			if err != nil {
+				t.Logf("scope %v: %v", scope, err)
+				continue
+			}
+			props, err := scoped.AccountProperties(tx.ReadBucket([]byte("waddrmgr")), 0)
+			if err != nil {
+				return err
+			}
+			t.Logf("scope %v: counters %d receive, %d change", scope, props.ExternalKeyCount, props.InternalKeyCount)
+			if os.Getenv("BREEZ_LIVE_FRESH") != "" {
+				props.ExternalKeyCount, props.InternalKeyCount = 0, 0
+			}
+			brs, err := accountBranches(addrType, props.AccountPubKey.String(), props.ExternalKeyCount, props.InternalKeyCount, &chaincfg.MainNetParams)
+			if err != nil {
+				return err
+			}
+			for _, b := range brs {
+				b.gap = false // the point of this test
+			}
+			branches = append(branches, brs...)
+		}
+		return nil
+	})
+	wdb.Close()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	var fundings []channelFunding
+	for _, dir := range strings.Split(os.Getenv("BREEZ_LIVE_CHANDBS"), ":") {
+		db, err := channeldb.Open(dir)
+		if err != nil {
+			t.Fatalf("%s: %v", dir, err)
+		}
+		chans, err := db.ChannelStateDB().FetchAllOpenChannels()
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, ch := range chans {
+			f, err := fundingOf(ch)
+			if err != nil {
+				t.Fatal(err)
+			}
+			fundings = append(fundings, f)
+		}
+		db.Close()
+	}
+
+	bdb, releaseDB, err := breezdb.Get(workDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer releaseDB()
+	chain, release, err := chainservice.Get(workDir, bdb)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer release()
+	if err := chain.Start(); err != nil {
+		t.Fatal(err)
+	}
+	for !chain.IsCurrent() {
+		best, _ := chain.BestBlock()
+		t.Logf("waiting for headers, at %d", best.Height)
+		time.Sleep(10 * time.Second)
+	}
+	watch, err := newAddressWatch(branches, 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(watch.scripts) != 0 {
+		t.Fatalf("%d addresses in the filter match, want none", len(watch.scripts))
+	}
+	watch.onHit = func(hit foundOutput) { t.Log("found " + hit.String()) }
+	// With nothing of its own in the match the watch must not make the
+	// walk start before the channels do.
+	watch.from = 0
+	for _, f := range fundings {
+		if watch.from == 0 || f.heightHint < watch.from {
+			watch.from = f.heightHint
+		}
+	}
+	start := time.Now()
+	walk := newChainWalk(fundings, watch, 0)
+	if err := walk.run(context.Background(), chain, func(h, from, tip uint32) {
+		if h%20000 == 0 {
+			t.Logf("block %d of %d (from %d), %s", h, tip, from, time.Since(start).Round(time.Second))
+		}
+	}); err != nil {
+		t.Fatal(err)
+	}
+	t.Logf("walk took %s", time.Since(start).Round(time.Second))
+	for point, v := range walk.verdicts() {
+		t.Logf("%s: %s %s collect %d", point, v.verdict, v.spent.ClosingTxID, v.spent.Collect)
+	}
+	want := os.Getenv("BREEZ_LIVE_PAID")
+	for _, b := range branches {
+		t.Logf("%s: paid up to %d", b.name, b.paidTo)
+		if name, upTo, ok := strings.Cut(want, ":"); ok && name == b.name {
+			if fmt.Sprint(b.paidTo) != upTo {
+				t.Errorf("%s: paid up to %d, want %s", b.name, b.paidTo, upTo)
+			}
+			want = ""
+		}
+	}
+	if want != "" {
+		t.Errorf("branch of %q not among the accounts", want)
 	}
 }

@@ -6,6 +6,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	bolt "go.etcd.io/bbolt"
 )
 
 type nopReporter struct{}
@@ -22,16 +24,74 @@ func testCore(t *testing.T, root string) *Core {
 	return New(cfg, nopReporter{})
 }
 
-// fakeNode puts the file HasRestoredNode looks for into dir.
+// testDB is a small valid database holding marker, as bytes.
+func testDB(t *testing.T, marker string) []byte {
+	t.Helper()
+	path := filepath.Join(t.TempDir(), "db")
+	db, err := bolt.Open(path, 0600, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	err = db.Update(func(tx *bolt.Tx) error {
+		b, err := tx.CreateBucket([]byte("test"))
+		if err != nil {
+			return err
+		}
+		return b.Put([]byte("marker"), []byte(marker))
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	db.Close()
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return raw
+}
+
+// markerOf reads the marker back from a database file.
+func markerOf(t *testing.T, path string) string {
+	t.Helper()
+	db, err := bolt.Open(path, 0600, &bolt.Options{ReadOnly: true})
+	if err != nil {
+		return "unreadable: " + err.Error()
+	}
+	defer db.Close()
+	var marker string
+	db.View(func(tx *bolt.Tx) error {
+		if b := tx.Bucket([]byte("test")); b != nil {
+			marker = string(b.Get([]byte("marker")))
+		}
+		return nil
+	})
+	return marker
+}
+
+// fakeNode puts the three node files into dir.
 func fakeNode(t *testing.T, dir, marker string) {
 	t.Helper()
-	chain := filepath.Join(dir, "data", "chain", "bitcoin", "mainnet")
-	if err := os.MkdirAll(chain, 0700); err != nil {
-		t.Fatal(err)
+	content := testDB(t, marker)
+	for name, rel := range nodeFileTargets("mainnet") {
+		if err := os.MkdirAll(filepath.Join(dir, rel), 0700); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(dir, rel, name), content, 0600); err != nil {
+			t.Fatal(err)
+		}
 	}
-	if err := os.WriteFile(filepath.Join(chain, "wallet.db"), []byte(marker), 0600); err != nil {
-		t.Fatal(err)
+}
+
+// place restores a small backup the way every restore does.
+func place(t *testing.T, c *Core, name, marker string, force bool) error {
+	t.Helper()
+	content := testDB(t, marker)
+	files := map[string][]byte{}
+	for file := range nodeFileTargets("") {
+		files[file] = content
 	}
+	_, err := c.placeBackup(name, files, force)
+	return err
 }
 
 const nodeA = "02e66bcb1e3c97de679c0d5b2f831ac913e53acdc99542ed839c17b1079df489ea"
@@ -43,24 +103,22 @@ func TestBackupsGetTheirOwnFolders(t *testing.T) {
 	if c.HasRestoredNode() {
 		t.Fatal("empty work folder reports a node")
 	}
-	if err := c.prepareBackupDir(nodeA, false); err != nil {
+	if err := place(t, c, nodeA, "A", false); err != nil {
 		t.Fatal(err)
 	}
-	fakeNode(t, c.dir(), "A")
 	// lnd's channel backup of node A must never be seen by node B.
 	scb := filepath.Join(c.dir(), "data", "chain", "bitcoin", "mainnet", "channel.backup")
 	os.WriteFile(scb, []byte("A"), 0600)
 
-	if err := c.prepareBackupDir(nodeB, false); err != nil {
+	if err := place(t, c, nodeB, "B", false); err != nil {
 		t.Fatal(err)
 	}
 	if c.dir() != filepath.Join(root, "backups", nodeB) {
 		t.Fatalf("node B runs in %s", c.dir())
 	}
-	if entries, _ := os.ReadDir(c.dir()); len(entries) != 0 {
-		t.Fatalf("node B's folder is not empty: %v", entries)
+	if _, err := os.Stat(filepath.Join(c.dir(), "data", "chain", "bitcoin", "mainnet", "channel.backup")); err == nil {
+		t.Fatal("node B's folder holds node A's channel backup")
 	}
-	fakeNode(t, c.dir(), "B")
 
 	// A new session continues with the last backup used.
 	c2 := testCore(t, root)
@@ -78,19 +136,21 @@ func TestBackupsGetTheirOwnFolders(t *testing.T) {
 func TestRestoreAgainMovesTheOldFolderAside(t *testing.T) {
 	root := t.TempDir()
 	c := testCore(t, root)
-	if err := c.prepareBackupDir(nodeA, false); err != nil {
+	if err := place(t, c, nodeA, "first", false); err != nil {
 		t.Fatal(err)
 	}
-	fakeNode(t, c.dir(), "first")
-
-	if err := c.prepareBackupDir(nodeA, false); !errors.Is(err, ErrNodeExists) {
+	if err := c.checkRestoreTarget(nodeA, false); !errors.Is(err, ErrNodeExists) {
 		t.Fatalf("restoring again without force: %v, want ErrNodeExists", err)
 	}
-	if err := c.prepareBackupDir(nodeA, true); err != nil {
+	if err := place(t, c, nodeA, "second", false); !errors.Is(err, ErrNodeExists) {
+		t.Fatalf("placing again without force: %v, want ErrNodeExists", err)
+	}
+	if err := place(t, c, nodeA, "second", true); err != nil {
 		t.Fatal(err)
 	}
-	if hasNode(c.dir(), "mainnet") {
-		t.Fatal("the folder for the new restore still holds the old wallet")
+	wallet := filepath.Join("data", "chain", "bitcoin", "mainnet", "wallet.db")
+	if got := markerOf(t, filepath.Join(c.dir(), wallet)); got != "second" {
+		t.Fatalf("the folder holds %q, want the new restore", got)
 	}
 	kept := ""
 	entries, _ := os.ReadDir(filepath.Join(root, "backups"))
@@ -99,9 +159,87 @@ func TestRestoreAgainMovesTheOldFolderAside(t *testing.T) {
 			kept = filepath.Join(root, "backups", e.Name())
 		}
 	}
-	data, err := os.ReadFile(filepath.Join(kept, "data", "chain", "bitcoin", "mainnet", "wallet.db"))
-	if err != nil || string(data) != "first" {
-		t.Fatalf("the earlier wallet was not kept: %v", err)
+	if got := markerOf(t, filepath.Join(kept, wallet)); got != "first" {
+		t.Fatalf("the earlier wallet was not kept: %q", got)
+	}
+}
+
+// A restore that fails before its files are complete changes nothing: the
+// working restore stays in place and in use.
+func TestFailedRestoreLeavesTheOldOneAlone(t *testing.T) {
+	root := t.TempDir()
+	c := testCore(t, root)
+	if err := place(t, c, nodeA, "first", false); err != nil {
+		t.Fatal(err)
+	}
+	// A wrong phrase, a damaged file, a missing file: all stop in
+	// decodeBackupFiles, before anything is placed.
+	if _, err := decodeBackupFiles(map[string][]byte{"wallet.db": []byte("x")}, nil); err == nil {
+		t.Fatal("an incomplete backup was accepted")
+	}
+	garbage := map[string][]byte{}
+	for name := range nodeFileTargets("") {
+		garbage[name] = []byte("neither a database nor valid ciphertext")
+	}
+	if _, err := decodeBackupFiles(garbage, nil); err == nil {
+		t.Fatal("files that are no databases were accepted")
+	}
+	if _, err := decodeBackupFiles(garbage, make([]byte, 32)); err == nil {
+		t.Fatal("files that do not decrypt were accepted")
+	}
+	wallet := filepath.Join(c.dir(), "data", "chain", "bitcoin", "mainnet", "wallet.db")
+	if got := markerOf(t, wallet); got != "first" {
+		t.Fatalf("the working restore now holds %q", got)
+	}
+	// A database cut short passes the header check and must still not be
+	// placed: the staged files are opened and walked first.
+	cut := map[string][]byte{}
+	for name := range nodeFileTargets("") {
+		whole := testDB(t, "cut")
+		cut[name] = whole[:len(whole)/2]
+	}
+	if _, err := c.placeBackup(nodeA, cut, true); err == nil {
+		t.Fatal("databases cut short were placed")
+	}
+	if got := markerOf(t, wallet); got != "first" {
+		t.Fatalf("after the refused restore the working one holds %q", got)
+	}
+	entries, _ := os.ReadDir(filepath.Join(root, "backups"))
+	for _, e := range entries {
+		if e.Name() != nodeA && e.Name() != nodeA+".restoring" {
+			t.Fatalf("backups folder holds %s: the working restore was moved", e.Name())
+		}
+	}
+}
+
+// A folder with a wallet but without its channel database is no restored
+// app: lnd would start on it with an empty channel database.
+func TestHalfARestoreIsNoNode(t *testing.T) {
+	root := t.TempDir()
+	c := testCore(t, root)
+	dir := c.backupDir(nodeA)
+	chain := filepath.Join(dir, "data", "chain", "bitcoin", "mainnet")
+	os.MkdirAll(chain, 0700)
+	os.WriteFile(filepath.Join(chain, "wallet.db"), []byte("half"), 0600)
+	if hasNode(dir, "mainnet") {
+		t.Fatal("a wallet alone counts as a restored app")
+	}
+	// Restoring over it keeps the half one aside, never deletes it.
+	if err := place(t, c, nodeA, "whole", true); err != nil {
+		t.Fatal(err)
+	}
+	if !c.HasRestoredNode() {
+		t.Fatal("the complete restore does not count")
+	}
+	found := false
+	entries, _ := os.ReadDir(filepath.Join(root, "backups"))
+	for _, e := range entries {
+		if strings.HasPrefix(e.Name(), nodeA+".replaced-") {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatal("the half restore's wallet was not kept aside")
 	}
 }
 
@@ -109,16 +247,15 @@ func TestRestoreAgainMovesTheOldFolderAside(t *testing.T) {
 func TestLibraryBindsTheProcessToOneFolder(t *testing.T) {
 	root := t.TempDir()
 	c := testCore(t, root)
-	if err := c.prepareBackupDir(nodeA, false); err != nil {
+	if err := place(t, c, nodeA, "A", false); err != nil {
 		t.Fatal(err)
 	}
 	boundLibDir = c.dir()
 	defer func() { boundLibDir = "" }()
-	if err := c.prepareBackupDir(nodeB, false); !errors.Is(err, ErrLibraryBound) {
+	if err := place(t, c, nodeB, "B", false); !errors.Is(err, ErrLibraryBound) {
 		t.Fatalf("other backup while bound: %v, want ErrLibraryBound", err)
 	}
-	fakeNode(t, c.dir(), "A")
-	if err := c.prepareBackupDir(nodeA, true); !errors.Is(err, ErrLibraryBound) {
+	if err := place(t, c, nodeA, "A2", true); !errors.Is(err, ErrLibraryBound) {
 		t.Fatalf("restore over the running backup: %v, want ErrLibraryBound", err)
 	}
 }
@@ -154,7 +291,7 @@ func TestLegacyLayoutIsMovedIntoBackups(t *testing.T) {
 func TestBackupNamesCannotLeaveTheWorkFolder(t *testing.T) {
 	c := testCore(t, t.TempDir())
 	for _, name := range []string{"", "..", "../x", "a/b", `a\b`, "UPPER", "x"} {
-		if err := c.prepareBackupDir(name, false); err == nil {
+		if err := place(t, c, name, "x", false); err == nil {
 			t.Errorf("name %q was accepted", name)
 		}
 	}

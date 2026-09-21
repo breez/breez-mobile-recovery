@@ -4,7 +4,10 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
 	"regexp"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -15,7 +18,6 @@ import (
 	"github.com/breez/breez/data"
 	"github.com/breez/breez/lnnode"
 	"github.com/lightningnetwork/lnd/lnrpc"
-	"github.com/lightningnetwork/lnd/lnrpc/walletrpc"
 	"google.golang.org/grpc"
 	"google.golang.org/protobuf/proto"
 )
@@ -103,14 +105,20 @@ var rescan struct {
 	startTime     int64  // wallet synced-to timestamp when the check began
 	wallStart     int64  // wall clock when the check began
 	tip           uint32 // chain tip once neutrino reports it caught up
+	// walletSyncFailed is set when btcwallet logged that it cannot take up
+	// the chain from its sync state.
+	walletSyncFailed bool
 }
 
 var (
-	rescanStartRe   = regexp.MustCompile(`Started rescan from block \S+ \(height (\d+)\) for (\d+) addresses`)
+	rescanStartRe   = regexp.MustCompile(`Started rescan from block \S+ \(height (\d+)\) for (\d+) address`)
 	rescanThroughRe = regexp.MustCompile(`Rescanned through block \S+ \(height (\d+)\)`)
 	rescanBlockRe   = regexp.MustCompile(`\[TRC\] BTCN: Rescan got block (\d+) `)
 	caughtUpRe      = regexp.MustCompile(`Fully caught up with cfheaders at height (\d+)`)
-	newBlockRe      = regexp.MustCompile(`NTFN: New block: height=(\d+)`)
+	// btcwallet wallet/chainntfns.go: logged, and retried for ever, when the
+	// wallet cannot take up the chain from its sync state.
+	walletSyncFailRe = regexp.MustCompile(`Unable to synchronize\s+wallet to chain`)
+	newBlockRe       = regexp.MustCompile(`NTFN: New block: height=(\d+)`)
 )
 
 // waitHeadersSynced returns once neutrino has logged that its headers and
@@ -139,6 +147,12 @@ func waitHeadersSynced(ctx context.Context, timeout time.Duration) error {
 // for the per-block trace line, which is progress data rather than
 // something to show in the log.
 func trackRescan(line string) bool {
+	if walletSyncFailRe.MatchString(line) {
+		rescan.Lock()
+		rescan.walletSyncFailed = true
+		rescan.Unlock()
+		return false
+	}
 	if m := caughtUpRe.FindStringSubmatch(line); m != nil {
 		h, _ := strconv.ParseUint(m[1], 10, 32)
 		rescan.Lock()
@@ -192,6 +206,9 @@ type node struct {
 	svc    *services
 	conn   *grpc.ClientConn
 	client lnrpc.LightningClient
+	// wroteSyncState: the history shortcut set the wallet's sync state
+	// before this start.
+	wroteSyncState bool
 }
 
 // startNode starts lnd, blocks until the RPC is ready and connects to it.
@@ -219,43 +236,6 @@ func startNode(ctx context.Context, cfg Config, svc *services) (*node, error) {
 		return nil, fmt.Errorf("connect to node: %w", err)
 	}
 	return &node{svc: svc, conn: conn, client: lnrpc.NewLightningClient(conn)}, nil
-}
-
-// AddressLookahead is how many addresses are derived on each of the four
-// branches (witness key hash and taproot, external and change) after a
-// restore, so the history check also finds funds the phone received or
-// swept after its last backup. The backup already knows every address in
-// use at backup time and the phone used a handful more (Roy's missing
-// funds sat one address past the last known one), so 50 per branch is
-// plenty. Every extra address slows the history check: 500 per branch
-// (2,937 addresses in total) ran at 48 blocks/s against 76 with 938.
-const AddressLookahead = 50
-
-// extendAddresses derives the look-ahead addresses. The wallet only scans
-// addresses it has derived, and a backup only knows the addresses in use
-// at backup time.
-func (n *node) extendAddresses(ctx context.Context, progressf func(string, ...interface{})) error {
-	wk := walletrpc.NewWalletKitClient(n.conn)
-	types := []walletrpc.AddressType{walletrpc.AddressType_WITNESS_PUBKEY_HASH, walletrpc.AddressType_TAPROOT_PUBKEY}
-	total := AddressLookahead * len(types) * 2
-	done := 0
-	for _, t := range types {
-		for _, change := range []bool{false, true} {
-			for i := 0; i < AddressLookahead; i++ {
-				c, cancel := context.WithTimeout(ctx, 30*time.Second)
-				_, err := wk.NextAddr(c, &walletrpc.AddrRequest{Type: t, Change: change})
-				cancel()
-				if err != nil {
-					return fmt.Errorf("derive address: %w", err)
-				}
-				done++
-				if done%200 == 0 {
-					progressf("Preparing addresses to check, %d of %d...", done, total)
-				}
-			}
-		}
-	}
-	return nil
 }
 
 func (n *node) close() {
@@ -317,7 +297,18 @@ func (n *node) trackTransactions(ctx context.Context) {
 // progress on every change.
 func (n *node) waitSynced(ctx context.Context, onProgress func(SyncProgress)) error {
 	var last SyncProgress
+	// A sync that stands still says so: the bitcoin peers may have gone
+	// away, and a screen that does not move reads as a hang.
+	lastChange := time.Now()
 	for {
+		rescan.Lock()
+		failed := rescan.walletSyncFailed
+		rescan.Unlock()
+		// Only after this start wrote the sync state: otherwise the line
+		// is a passing network trouble btcwallet gets over by itself.
+		if failed && n.wroteSyncState {
+			return errWalletSync
+		}
 		info, err := n.info(ctx)
 		if err == nil {
 			rescan.Lock()
@@ -334,6 +325,12 @@ func (n *node) waitSynced(ctx context.Context, onProgress func(SyncProgress)) er
 			if p.Height != last.Height || p.Stage != last.Stage || p.Peers != last.Peers || p.ThroughTime != last.ThroughTime || p.Remaining != last.Remaining {
 				onProgress(p)
 				last = p
+				lastChange = time.Now()
+			} else if time.Since(lastChange) >= 10*time.Minute {
+				stalled := p
+				stalled.Message = "No progress for 10 minutes. Check the internet connection; the sync carries on by itself once the bitcoin network answers."
+				onProgress(stalled)
+				lastChange = time.Now()
 			}
 		} else {
 			nodeLog("[getinfo] " + err.Error())
@@ -347,6 +344,20 @@ func (n *node) waitSynced(ctx context.Context, onProgress func(SyncProgress)) er
 		}
 	}
 }
+
+// stillOpenInLnd reports whether lnd lists the channel as open: it has not
+// noticed the close yet.
+func stillOpenInLnd(chans []*lnrpc.Channel, chanPoint string) bool {
+	for _, c := range chans {
+		if c.ChannelPoint == chanPoint {
+			return true
+		}
+	}
+	return false
+}
+
+// errWalletSync: btcwallet cannot take up the chain from its sync state.
+var errWalletSync = errors.New("the app cannot continue from its saved sync position")
 
 // Synced reports whether the progress describes a fully synced node.
 func (p SyncProgress) Synced() bool { return p.Stage == "synced" }
@@ -433,6 +444,47 @@ func syncProgress(info *lnrpc.GetInfoResponse) SyncProgress {
 	return p
 }
 
+// whileAvailable runs a call to the node again when its connection reports
+// Unavailable. The connection to the embedded lnd sits idle during a long
+// walk, and the first call after it can find it being set up again (seen
+// 2026-09-21 after a 34 minute walk: "authentication handshake failed:
+// io: read/write on closed pipe"). Any other error is returned at once.
+func whileAvailable(ctx context.Context, call func() error) error {
+	wait := time.Second
+	for attempt := 1; ; attempt++ {
+		err := call()
+		if err == nil || status.Code(err) != codes.Unavailable || attempt == 6 {
+			return err
+		}
+		nodeLog(fmt.Sprintf("[node] %v; asking again", err))
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-time.After(wait):
+		}
+		wait *= 2
+	}
+}
+
+// walletTxIDs are the transactions the wallet knows.
+func (n *node) walletTxIDs(ctx context.Context) (map[string]bool, error) {
+	var res *lnrpc.TransactionDetails
+	err := whileAvailable(ctx, func() (err error) {
+		c, cancel := context.WithTimeout(ctx, 2*time.Minute)
+		defer cancel()
+		res, err = n.client.GetTransactions(c, &lnrpc.GetTransactionsRequest{})
+		return err
+	})
+	if err != nil {
+		return nil, fmt.Errorf("list the app's transactions: %w", err)
+	}
+	ids := map[string]bool{}
+	for _, tx := range res.Transactions {
+		ids[tx.TxHash] = true
+	}
+	return ids, nil
+}
+
 func (n *node) walletBalance(ctx context.Context) (*lnrpc.WalletBalanceResponse, error) {
 	return n.client.WalletBalance(ctx, &lnrpc.WalletBalanceRequest{})
 }
@@ -490,17 +542,39 @@ func (n *node) status(ctx context.Context, checks *channelChecks) (*Status, erro
 	}
 	st.OnchainConfirmed = wb.ConfirmedBalance
 	st.OnchainUnconfirmed = wb.UnconfirmedBalance
-	// lnd can hold unconfirmed transactions that will never confirm: it
-	// sweeps a closed channel's output that the phone already swept after
-	// the backup, the network rejects the double spend, and a neutrino node
-	// never hears of it, so lnd keeps the transaction and fee-bumps it every
-	// block. That is not money on its way.
-	if wb.UnconfirmedBalance > 0 {
-		txs, err := n.client.GetTransactions(ctx, &lnrpc.GetTransactionsRequest{})
-		if err != nil {
-			st.Warnings = append(st.Warnings, "unconfirmed balance not checked: "+err.Error())
-		} else if st.OnchainUnconfirmed -= deadUnconfirmed(txs.Transactions); st.OnchainUnconfirmed < 0 {
+
+	// What a closed channel still owes this app comes from the chain walk,
+	// which follows the close's output itself: it holds whether or not lnd
+	// has noticed the close, and whether or not lnd can list its pending
+	// closes (on some old nodes it cannot).
+	counted := map[string]bool{} // outputs counted as Pending
+	walked := map[string]SpentChannel{}
+	for _, sc := range checks.spent() {
+		walked[sc.ChannelPoint] = sc
+		st.ClosedOnChain = append(st.ClosedOnChain, sc)
+		st.InPending += sc.Collect
+		if sc.ToUs != "" {
+			counted[sc.ToUs] = true
+		}
+	}
+
+	confirmedTx := map[string]bool{}
+	txs, err := n.client.GetTransactions(ctx, &lnrpc.GetTransactionsRequest{})
+	if err != nil {
+		st.Warnings = append(st.Warnings, "the app's transactions could not be listed: "+err.Error())
+	} else {
+		if st.OnchainUnconfirmed -= notOnItsWay(txs.Transactions, counted); st.OnchainUnconfirmed < 0 {
 			st.OnchainUnconfirmed = 0
+		}
+		for _, tx := range txs.Transactions {
+			switch {
+			case tx.NumConfirmations > 0:
+				confirmedTx[tx.TxHash] = true
+			case tx.Amount < 0:
+				// Sent and not confirmed yet: the balance is gone from the
+				// numbers already, the recovery is not over.
+				st.Outgoing++
+			}
 		}
 	}
 
@@ -531,13 +605,7 @@ func (n *node) status(ctx context.Context, checks *channelChecks) (*Status, erro
 				st.InChannels += c.LocalBalance
 			}
 		case verdictSpent:
-			st.ClosedOnChain = append(st.ClosedOnChain, v.spent)
-			// What the close paid this app and nobody spent yet is money
-			// on its way: lnd still lists the channel as open, so it has
-			// not collected it. Once it has, the channel leaves this list
-			// and the amount shows through lnd's own pending and
-			// on-chain balances.
-			st.InPending += v.spent.Collect
+			// Counted above, from the walk.
 		case verdictForeign:
 			st.Warnings = append(st.Warnings, "channel "+c.ChannelPoint+" belongs to another node")
 		default:
@@ -548,25 +616,50 @@ func (n *node) status(ctx context.Context, checks *channelChecks) (*Status, erro
 	pend, err := n.pending(ctx)
 	if err != nil {
 		// Old nodes can carry a closed channel lnd no longer has an
-		// arbitrator for, which makes the whole RPC fail. Report it
-		// instead of hiding balances and open channels.
+		// arbitrator for, which makes the whole RPC fail.
 		st.Warnings = append(st.Warnings, "pending channel closes could not be listed: "+err.Error())
-		return st, nil
+		pend = &lnrpc.PendingChannelsResponse{}
 	}
+	// A close whose payout the walk follows is the walk's to report, above:
+	// lnd's figure for it would count the same money again, and keeps
+	// standing for a while after the sweep confirmed.
+	byWalk := func(chanPoint string) bool { return walked[chanPoint].PayoutKnown }
+	listed := map[string]bool{}
 	for _, c := range pend.WaitingCloseChannels {
+		listed[c.Channel.ChannelPoint] = true
+		// A close that confirmed and paid the wallet shows on-chain before
+		// lnd has noticed: its figure would count the money again.
+		if byWalk(c.Channel.ChannelPoint) || (c.ClosingTxid != "" && confirmedTx[c.ClosingTxid]) {
+			continue
+		}
 		st.Pending = append(st.Pending, PendingClose{ChannelPoint: c.Channel.ChannelPoint, Kind: "waiting", Amount: c.LimboBalance})
 		st.InPending += c.LimboBalance
 	}
 	for _, c := range pend.PendingClosingChannels {
+		listed[c.Channel.ChannelPoint] = true
+		if byWalk(c.Channel.ChannelPoint) {
+			continue
+		}
 		st.Pending = append(st.Pending, PendingClose{ChannelPoint: c.Channel.ChannelPoint, Kind: "cooperative", ClosingTxID: c.ClosingTxid, Amount: c.Channel.LocalBalance})
 		st.InPending += c.Channel.LocalBalance
+	}
+	for _, c := range pend.PendingForceClosingChannels {
+		listed[c.Channel.ChannelPoint] = true
+	}
+	// A channel closed on chain whose payout the walk cannot tell and lnd
+	// does not list (yet, or at all): its settlement is lnd's to finish,
+	// and the app must not call the recovery done meanwhile.
+	for point, sc := range walked {
+		if !sc.PayoutKnown && !listed[point] && checks.get(point).verdict == verdictSpent && stillOpenInLnd(chans, point) {
+			st.Unresolved++
+		}
 	}
 	swept, err := n.sweptCloses(ctx, pend)
 	if err != nil {
 		st.Warnings = append(st.Warnings, "could not check whether closing channels were already swept: "+err.Error())
 	}
 	for _, c := range pend.PendingForceClosingChannels {
-		if swept[c.ClosingTxid] {
+		if swept[c.ClosingTxid] || byWalk(c.Channel.ChannelPoint) {
 			continue
 		}
 		st.Pending = append(st.Pending, PendingClose{ChannelPoint: c.Channel.ChannelPoint, Kind: "force", ClosingTxID: c.ClosingTxid, Amount: c.LimboBalance, BlocksToMature: c.BlocksTilMaturity})
@@ -581,10 +674,10 @@ func (n *node) status(ctx context.Context, checks *channelChecks) (*Status, erro
 // spend check comes back, which can take hours after a restore. Closes with
 // HTLCs or a time lock left are never reported, lnd has more to do there.
 func (n *node) sweptCloses(ctx context.Context, pend *lnrpc.PendingChannelsResponse) (map[string]bool, error) {
-	want := map[string]bool{}
+	want := map[string]int64{}
 	for _, c := range pend.PendingForceClosingChannels {
 		if c.BlocksTilMaturity <= 0 && len(c.PendingHtlcs) == 0 && c.ClosingTxid != "" {
-			want[c.ClosingTxid] = true
+			want[c.ClosingTxid] = c.LimboBalance
 		}
 	}
 	if len(want) == 0 {
@@ -601,6 +694,21 @@ func (n *node) sweptCloses(ctx context.Context, pend *lnrpc.PendingChannelsRespo
 // although they can never confirm: one of their inputs is already spent by
 // a confirmed wallet transaction.
 func deadUnconfirmed(txs []*lnrpc.Transaction) int64 {
+	return notOnItsWay(txs, nil)
+}
+
+// notOnItsWay is the part of the wallet's unconfirmed balance that is not
+// new money on its way:
+//
+//   - a transaction spending an output a CONFIRMED wallet transaction spent
+//     can never confirm (lnd swept what the phone had swept already; a
+//     neutrino node never hears of the rejection and keeps the transaction);
+//   - a transaction collecting an output that counts as Pending already
+//     (counted) would show the same money twice;
+//   - of several unconfirmed transactions spending the same output (lnd's
+//     fee bumps: with neutrino the replaced ones stay in the wallet) only
+//     the newest counts.
+func notOnItsWay(txs []*lnrpc.Transaction, counted map[string]bool) int64 {
 	spent := map[string]bool{}
 	for _, tx := range txs {
 		if tx.NumConfirmations < 1 {
@@ -610,32 +718,61 @@ func deadUnconfirmed(txs []*lnrpc.Transaction) int64 {
 			spent[prev.Outpoint] = true
 		}
 	}
-	var dead int64
+	var unconfirmed []*lnrpc.Transaction
 	for _, tx := range txs {
-		if tx.NumConfirmations > 0 || tx.Amount <= 0 {
+		if tx.NumConfirmations < 1 && tx.Amount > 0 {
+			unconfirmed = append(unconfirmed, tx)
+		}
+	}
+	sort.SliceStable(unconfirmed, func(i, j int) bool { return unconfirmed[i].TimeStamp > unconfirmed[j].TimeStamp })
+	var out int64
+	taken := map[string]bool{}
+	for _, tx := range unconfirmed {
+		drop := false
+		for _, prev := range tx.PreviousOutpoints {
+			if spent[prev.Outpoint] || counted[prev.Outpoint] || taken[prev.Outpoint] {
+				drop = true
+			}
+		}
+		if drop {
+			out += tx.Amount
 			continue
 		}
 		for _, prev := range tx.PreviousOutpoints {
-			if spent[prev.Outpoint] {
-				dead += tx.Amount
-				break
-			}
+			taken[prev.Outpoint] = true
 		}
 	}
-	return dead
+	return out
 }
 
 // sweptBy returns the txids in want that a confirmed transaction spends.
-func sweptBy(txs []*lnrpc.Transaction, want map[string]bool) map[string]bool {
-	swept := map[string]bool{}
+func sweptBy(txs []*lnrpc.Transaction, want map[string]int64) map[string]bool {
+	got := map[string]int64{}
 	for _, tx := range txs {
 		if tx.NumConfirmations < 1 {
 			continue
 		}
+		seen := map[string]bool{}
 		for _, prev := range tx.PreviousOutpoints {
-			if i := strings.LastIndexByte(prev.Outpoint, ':'); i > 0 && want[prev.Outpoint[:i]] {
-				swept[prev.Outpoint[:i]] = true
+			i := strings.LastIndexByte(prev.Outpoint, ':')
+			if i <= 0 {
+				continue
 			}
+			closing := prev.Outpoint[:i]
+			if _, ok := want[closing]; ok && !seen[closing] {
+				seen[closing] = true
+				got[closing] += tx.Amount
+			}
+		}
+	}
+	// Spending just any output of the close is not collecting it: the phone
+	// may have spent the close's anchor (a few hundred sat, usually a net
+	// loss) and left the channel's funds. A sweep brings in at least half
+	// of what is owed: that is the most lnd's sweeper spends on fees.
+	swept := map[string]bool{}
+	for closing, owed := range want {
+		if in := got[closing]; in > 0 && in*2 >= owed {
+			swept[closing] = true
 		}
 	}
 	return swept

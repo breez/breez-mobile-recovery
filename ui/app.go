@@ -276,7 +276,7 @@ type Settings struct {
 }
 
 // ApplySettings replaces the session configuration. It refuses while an
-// operation runs or a node is started.
+// operation runs or once a node was started in this process.
 func (a *App) ApplySettings(s Settings) (State, error) {
 	if !a.opMu.TryLock() {
 		return State{}, errBusy
@@ -285,8 +285,13 @@ func (a *App) ApplySettings(s Settings) (State, error) {
 	if strings.TrimSpace(s.WorkDir) == "" {
 		return State{}, errors.New("the work folder cannot be empty")
 	}
+	// Once the library ran in this process it cannot be stopped and started
+	// again (it hangs or crashes, see CLAUDE.md), and its Stop can hang:
+	// settings change before a node was started, or after a restart.
+	if a.c().LibraryBound() {
+		return State{}, errors.New("close and reopen the app to change these settings: the node already ran in this session")
+	}
 	a.coreMu.Lock()
-	a.core.Stop()
 	a.cfg.WorkDir = strings.TrimSpace(s.WorkDir)
 	a.cfg.Peers = strings.TrimSpace(s.Peers)
 	a.core = core.New(a.cfg, &reporter{app: a})
@@ -461,9 +466,16 @@ func (a *App) StartAndSync() (*core.Status, error) {
 			return err
 		}
 		err := c.WaitSynced(ctx, func(p core.SyncProgress) {
-			a.log.tool(p.Message)
+			// The search for later funds reports twice a second with the
+			// same words; its log lines come from core.
+			if p.Stage != "addresses" {
+				a.log.tool(p.Message)
+			}
 			wruntime.EventsEmit(a.ctx, "sync", p)
 		})
+		if errors.Is(err, core.ErrRestartRequired) {
+			a.relaunch("continue")
+		}
 		if err != nil {
 			return err
 		}
@@ -491,7 +503,7 @@ const relaunchEnv = "BREEZ_RECOVERY_RELAUNCH"
 func (a *App) relaunch(then string) {
 	exe, err := os.Executable()
 	if err != nil {
-		a.log.tool("relaunch: " + err.Error())
+		a.relaunchFailed(err)
 		return
 	}
 	cmd := exec.Command(exe)
@@ -502,7 +514,7 @@ func (a *App) relaunch(then string) {
 	}
 	cmd.Env = append(cmd.Env, relaunchEnv+"="+then)
 	if err := cmd.Start(); err != nil {
-		a.log.tool("relaunch: " + err.Error())
+		a.relaunchFailed(err)
 		return
 	}
 	a.log.tool("restarting the app")
@@ -575,7 +587,7 @@ func (a *App) SaveHistory() (string, error) {
 
 // ValidateAddress checks a bitcoin address.
 func (a *App) ValidateAddress(address string) error {
-	return core.ValidateAddress(strings.TrimSpace(address))
+	return a.c().ValidateAddress(strings.TrimSpace(address))
 }
 
 // PrepareSweep builds the sweep transactions without broadcasting.
@@ -646,7 +658,27 @@ func (a *App) OpenURL(url string) { wruntime.BrowserOpenURL(a.ctx, url) }
 func (a *App) OpenWorkDir() {
 	dir := a.c().Config().WorkDir
 	os.MkdirAll(dir, 0700)
-	wruntime.BrowserOpenURL(a.ctx, "file://"+filepath.ToSlash(dir))
+	// Not through Wails' BrowserOpenURL: since 2.16 it refuses file URLs.
+	var cmd *exec.Cmd
+	switch runtime.GOOS {
+	case "windows":
+		cmd = exec.Command("explorer", dir)
+	case "darwin":
+		cmd = exec.Command("open", dir)
+	default:
+		cmd = exec.Command("xdg-open", dir)
+	}
+	if err := cmd.Start(); err != nil {
+		a.log.tool("open " + dir + ": " + err.Error())
+	}
+}
+
+// relaunchFailed tells the user what to do when the app could not start
+// its own next copy: the step it was about to take happens on the next
+// start, by hand.
+func (a *App) relaunchFailed(err error) {
+	a.log.tool("the app could not restart itself: " + err.Error())
+	wruntime.EventsEmit(a.ctx, "progress", "Close the app and open it again to continue.")
 }
 
 func tail(s string, n int) string {

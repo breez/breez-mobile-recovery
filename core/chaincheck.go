@@ -39,6 +39,11 @@ type SpentChannel struct {
 	// wallet. Zero when there is none, or when the output cannot be told
 	// apart (channels older than static remote keys).
 	Collect int64 `json:"collect"`
+	// ToUs is the outpoint Collect sits on, "" when Collect is 0.
+	ToUs string `json:"toUs,omitempty"`
+	// PayoutKnown says the walk saw what the close paid this app and follows
+	// that output itself. When false the amount is lnd's to report.
+	PayoutKnown bool `json:"payoutKnown"`
 }
 
 // A channel lnd lists as open gets one of these verdicts. Only verdictOpen
@@ -76,6 +81,20 @@ func (s *channelChecks) set(m map[string]channelVerdict) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.verdicts, s.checked = m, true
+}
+
+// spent lists the channels found closed on chain, in a stable order.
+func (s *channelChecks) spent() []SpentChannel {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	var out []SpentChannel
+	for _, v := range s.verdicts {
+		if v.verdict == verdictSpent {
+			out = append(out, v.spent)
+		}
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].ChannelPoint < out[j].ChannelPoint })
+	return out
 }
 
 func (s *channelChecks) get(chanPoint string) channelVerdict {
@@ -163,6 +182,34 @@ func toUsScript(ch *channeldb.OpenChannel) []byte {
 	return desc.PkScript()
 }
 
+// isForeign reports whether the channel belongs to another node: the wallet
+// must derive the channel's funding key at the channel's own key locator. A
+// backup can pair one node's wallet with another node's channels (seen in a
+// real Breez backup from 2022); nothing of such a channel is this app's.
+func isForeign(ctx context.Context, wk walletrpc.WalletKitClient, ch *channeldb.OpenChannel) (bool, error) {
+	key := ch.LocalChanCfg.MultiSigKey
+	res, err := wk.DeriveKey(ctx, &signrpc.KeyLocator{KeyFamily: int32(key.Family), KeyIndex: int32(key.Index)})
+	if err != nil {
+		return false, fmt.Errorf("derive the key of channel %s: %w", ch.FundingOutpoint, err)
+	}
+	return !bytes.Equal(res.RawKeyBytes, key.PubKey.SerializeCompressed()), nil
+}
+
+// fundingOf is what the chain walk needs to know about a channel.
+func fundingOf(ch *channeldb.OpenChannel) (channelFunding, error) {
+	script, err := fundingPkScript(ch)
+	if err != nil {
+		return channelFunding{}, fmt.Errorf("funding script of %s: %w", ch.FundingOutpoint, err)
+	}
+	return channelFunding{
+		chanPoint:  ch.FundingOutpoint.String(),
+		outpoint:   ch.FundingOutpoint,
+		pkScript:   script,
+		heightHint: fundingHeightHint(ch),
+		toUsScript: toUsScript(ch),
+	}, nil
+}
+
 // filterSource is the part of neutrino's chain service the scan uses.
 type filterSource interface {
 	BestBlock() (*headerfs.BlockStamp, error)
@@ -231,8 +278,16 @@ func applyBlock(states []*fundingState, block *wire.MsgBlock, height uint32) {
 func (st *fundingState) verdict() channelVerdict {
 	switch {
 	case st.spent != nil:
+		// Computed anew each time: a walk that is carried on may find the
+		// output spent later.
+		st.spent.Collect, st.spent.ToUs = 0, ""
+		// Known only when the close shows this app's output of the peer's
+		// commitment. Without one the close may be the app's own commitment
+		// (a delayed output), a cooperative close, or one that paid nothing:
+		// lnd has to say.
+		st.spent.PayoutKnown = st.toUs != nil
 		if st.toUs != nil && !st.toUsSpent {
-			st.spent.Collect = st.toUsValue
+			st.spent.Collect, st.spent.ToUs = st.toUsValue, st.toUs.String()
 		}
 		return channelVerdict{verdict: verdictSpent, spent: *st.spent}
 	case !st.found:
@@ -246,11 +301,12 @@ func (st *fundingState) verdict() channelVerdict {
 	return channelVerdict{verdict: verdictOpen}
 }
 
-// scanFundingOutputs walks the node's compact filters from the oldest
-// funding height to the tip and looks into every block whose filter matches
-// a funding script: the block that created an output and the block that
-// spent it both match. A scan error is returned, never turned into a
-// verdict.
+// chainWalk walks the node's compact filters from the oldest height anything
+// is watched at to the tip and looks into every block whose filter matches a
+// watched script: the block that created a funding output and the block that
+// spent it both match, and so does a block paying one of the wallet's next
+// addresses (watch, nil when the address search is done). It can be run
+// again later and then carries on from where it stopped.
 //
 // It does not use neutrino's GetUtxo. lnd runs its own GetUtxo scans through
 // the same scanner, which works one batch at a time: requests that arrive
@@ -259,41 +315,131 @@ func (st *fundingState) verdict() channelVerdict {
 // stage sat silent for minutes). GetUtxo also only looks for the output in
 // its start block, so it needs the exact confirmation height, which the
 // LSP's early channels do not have.
-func scanFundingOutputs(ctx context.Context, chain filterSource, fundings []channelFunding, onBlock func(height, from, tip uint32)) (map[string]channelVerdict, error) {
+type chainWalk struct {
+	states []*fundingState
+	// unusable holds the verdicts of channels without a height to look from.
+	unusable map[string]channelVerdict
+	watch    *addressWatch
+	next     uint32 // first block not walked yet, 0 before the first run
+	all      []channelFunding
+	// floor is the first block whose filter the node can fetch: the block
+	// after the first one it has (see walkStart). Nothing is looked for
+	// below it, and the block before it is fetched directly. 0 when the
+	// walk was not told (then every height is taken as it is).
+	floor uint32
+}
+
+// newChainWalk prepares a walk. A channel without any height is set aside
+// when the walk has no floor to start it from. A height past the tip (a
+// zero-conf alias, or a channel newer than the headers at hand) is simply
+// never reached, and looked at again on every later run.
+func newChainWalk(fundings []channelFunding, watch *addressWatch, floor uint32) *chainWalk {
+	w := &chainWalk{unusable: map[string]channelVerdict{}, watch: watch, all: fundings, floor: floor}
+	for _, f := range fundings {
+		if f.heightHint == 0 && floor == 0 {
+			w.unusable[f.chanPoint] = channelVerdict{verdict: verdictUnverified, reason: "no usable funding height"}
+			continue
+		}
+		w.states = append(w.states, &fundingState{f: f})
+	}
+	sort.Slice(w.states, func(i, j int) bool { return w.states[i].f.heightHint < w.states[j].f.heightHint })
+	return w
+}
+
+// start is the block a channel is looked for from. A channel of another
+// node, which a mixed-up backup can carry, may be older than this node's
+// first block: its funding cannot be seen then (it stays unverified, never
+// open), but its close still can.
+func (w *chainWalk) start(st *fundingState) uint32 {
+	if st.f.heightHint < w.floor {
+		return w.floor
+	}
+	return st.f.heightHint
+}
+
+// fundings are all channels the walk was made for.
+func (w *chainWalk) fundings() []channelFunding {
+	out := append([]channelFunding{}, w.all...)
+	return out
+}
+
+// has reports whether the walk looks after the channel.
+func (w *chainWalk) has(chanPoint string) bool {
+	if _, ok := w.unusable[chanPoint]; ok {
+		return true
+	}
+	for _, st := range w.states {
+		if st.f.chanPoint == chanPoint {
+			return true
+		}
+	}
+	return false
+}
+
+func (w *chainWalk) verdicts() map[string]channelVerdict {
 	out := map[string]channelVerdict{}
+	for point, v := range w.unusable {
+		out[point] = v
+	}
+	for _, st := range w.states {
+		out[st.f.chanPoint] = st.verdict()
+	}
+	return out
+}
+
+// run walks to the chain tip. A scan error is returned, never turned into
+// a verdict.
+func (w *chainWalk) run(ctx context.Context, chain filterSource, onBlock func(height, from, tip uint32)) error {
 	best, err := chain.BestBlock()
 	if err != nil {
-		return nil, fmt.Errorf("read the chain tip: %w", err)
+		return fmt.Errorf("read the chain tip: %w", err)
 	}
 	tip := uint32(best.Height)
 
-	var states []*fundingState
-	for _, f := range fundings {
-		// Zero means the channel database has no usable height, and a
-		// height past the tip is not a chain height (a zero-conf alias).
-		if f.heightHint == 0 || f.heightHint > tip {
-			out[f.chanPoint] = channelVerdict{verdict: verdictUnverified,
-				reason: fmt.Sprintf("no usable funding height (%d, chain tip %d)", f.heightHint, tip)}
-			continue
+	// nextStart is the lowest height above h something starts being
+	// watched at, past the tip when there is none.
+	nextStart := func(h uint32) uint32 {
+		next := tip + 1
+		for _, st := range w.states {
+			if at := w.start(st); at > h && at < next {
+				next = at
+			}
 		}
-		states = append(states, &fundingState{f: f})
+		if w.watch != nil {
+			at := w.watch.from
+			if at < w.floor {
+				at = w.floor
+			}
+			if at > h && at < next {
+				next = at
+			}
+		}
+		return next
 	}
-	if len(states) == 0 {
-		return out, nil
+	from := w.next
+	if from == 0 {
+		if from = nextStart(0); from > tip {
+			return nil
+		}
+		// The block before the floor has no filter to fetch (see
+		// walkStart) but may matter: it is one block, look into it.
+		if w.floor > 1 && from == w.floor {
+			if err := w.open(ctx, chain, w.floor-1); err != nil {
+				return err
+			}
+		}
 	}
-	sort.Slice(states, func(i, j int) bool { return states[i].f.heightHint < states[j].f.heightHint })
-	from := states[0].f.heightHint
 
 	for h := from; h <= tip; h++ {
 		if err := ctx.Err(); err != nil {
-			return nil, err
+			return err
 		}
 		// Watch the outputs whose funding height is reached and that are
 		// not spent yet.
 		var scripts [][]byte
-		for _, st := range states {
+		for _, st := range w.states {
 			switch {
-			case st.f.heightHint > h:
+			case w.start(st) > h:
 			case st.spent == nil:
 				scripts = append(scripts, st.f.pkScript)
 			case st.toUs != nil && !st.toUsSpent:
@@ -302,15 +448,13 @@ func scanFundingOutputs(ctx context.Context, chain filterSource, fundings []chan
 				scripts = append(scripts, st.f.toUsScript)
 			}
 		}
+		if w.watch != nil {
+			scripts = append(scripts, w.watch.scriptsAt(h)...)
+		}
 		if len(scripts) == 0 {
-			// Nothing left to watch among the channels reached so far:
-			// skip to the next funding.
-			next := tip + 1
-			for _, st := range states {
-				if st.f.heightHint > h && st.f.heightHint < next {
-					next = st.f.heightHint
-				}
-			}
+			// Nothing left to watch among what was reached so far: skip
+			// to where the next thing starts.
+			next := nextStart(h)
 			if next > tip {
 				break
 			}
@@ -319,31 +463,41 @@ func scanFundingOutputs(ctx context.Context, chain filterSource, fundings []chan
 		}
 		hash, err := chain.GetBlockHash(int64(h))
 		if err != nil {
-			return nil, fmt.Errorf("block %d: %w", h, err)
+			return fmt.Errorf("block %d: %w", h, err)
 		}
 		// OptimisticBatch fetches the following filters along with this
 		// one, as neutrino's own rescan does. Without it every block is a
 		// network round trip: 15 blocks a second against several hundred.
-		filter, err := chain.GetCFilter(*hash, wire.GCSFilterRegular, neutrino.OptimisticBatch())
+		var filter *gcs.Filter
+		err = patiently(ctx, fmt.Sprintf("filter of block %d", h), func() (err error) {
+			filter, err = chain.GetCFilter(*hash, wire.GCSFilterRegular, neutrino.OptimisticBatch())
+			if err == nil && filter == nil {
+				err = errors.New("no filter")
+			}
+			return err
+		})
 		if err != nil {
-			return nil, fmt.Errorf("filter of block %d: %w", h, err)
-		}
-		if filter == nil {
-			return nil, fmt.Errorf("no filter for block %d", h)
+			return fmt.Errorf("filter of block %d: %w", h, err)
 		}
 		match, err := filter.MatchAny(builder.DeriveKey(hash), scripts)
 		if err != nil {
-			return nil, fmt.Errorf("filter of block %d: %w", h, err)
+			return fmt.Errorf("filter of block %d: %w", h, err)
 		}
 		if match {
-			block, err := chain.GetBlock(*hash)
-			if err != nil {
-				return nil, fmt.Errorf("fetch block %d: %w", h, err)
+			if err := w.open(ctx, chain, h); err != nil {
+				return err
 			}
-			applyBlock(states, block.MsgBlock(), h)
 		}
 		if onBlock != nil {
-			onBlock(h, from, tip)
+			// A pass over addresses that only need the blocks before they
+			// joined ends there, not at the tip.
+			target := tip
+			if len(w.states) == 0 && w.watch != nil {
+				if end := w.watch.end(); end != 0 && end <= tip {
+					target = end - 1
+				}
+			}
+			onBlock(h, from, target)
 		}
 		// Blocks found while scanning are part of the answer.
 		if h == tip {
@@ -352,10 +506,96 @@ func scanFundingOutputs(ctx context.Context, chain filterSource, fundings []chan
 			}
 		}
 	}
-	for _, st := range states {
-		out[st.f.chanPoint] = st.verdict()
+	w.next = tip + 1
+	return nil
+}
+
+// fetchPatience is how long the walk keeps asking the network for one
+// header, filter or block before it gives up. A laptop that slept, a Wi-Fi
+// that dropped: the first request afterwards times out, and a walk of many
+// minutes must not end, and start over, for that (seen 2026-09-21: five
+// runs lost to one closed lid).
+var fetchPatience = 15 * time.Minute
+
+// patiently runs a network request until it succeeds, the context ends or
+// fetchPatience has passed since its first failure.
+func patiently(ctx context.Context, what string, request func() error) error {
+	var since time.Time
+	wait := 2 * time.Second
+	for {
+		err := request()
+		if err == nil {
+			if !since.IsZero() {
+				nodeLog(fmt.Sprintf("[chain] %s: the network answers again", what))
+			}
+			return nil
+		}
+		if since.IsZero() {
+			since = time.Now()
+			if fetchPatience > 0 {
+				nodeLog(fmt.Sprintf("[chain] %s: %v; asking again for up to %s", what, err, fetchPatience))
+			}
+		}
+		if time.Since(since) >= fetchPatience {
+			return err
+		}
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-time.After(wait):
+		}
+		if wait < 30*time.Second {
+			wait *= 2
+		}
 	}
-	return out, nil
+}
+
+// open fetches a block and records what it says about the channels and the
+// wallet's addresses.
+func (w *chainWalk) open(ctx context.Context, chain filterSource, h uint32) error {
+	hash, err := chain.GetBlockHash(int64(h))
+	if err != nil {
+		return fmt.Errorf("block %d: %w", h, err)
+	}
+	var block *btcutil.Block
+	err = patiently(ctx, fmt.Sprintf("block %d", h), func() (err error) {
+		block, err = chain.GetBlock(*hash)
+		return err
+	})
+	if err != nil {
+		return fmt.Errorf("fetch block %d: %w", h, err)
+	}
+	msg := block.MsgBlock()
+	open := map[*fundingState]bool{}
+	for _, st := range w.states {
+		open[st] = st.spent == nil
+	}
+	applyBlock(w.states, msg, h)
+	if w.watch == nil {
+		return nil
+	}
+	// A channel closed in this block: from here on the search follows
+	// every output of the closing transaction.
+	for _, st := range w.states {
+		if open[st] && st.spent != nil {
+			for _, tx := range msg.Transactions {
+				if tx.TxHash().String() == st.spent.ClosingTxID {
+					w.watch.follow(tx, 0)
+				}
+			}
+		}
+	}
+	w.watch.applyBlock(msg, h)
+	return nil
+}
+
+// scanFundingOutputs is one walk over the channels alone.
+func scanFundingOutputs(ctx context.Context, chain filterSource, fundings []channelFunding, onBlock func(height, from, tip uint32)) (map[string]channelVerdict, error) {
+	w := newChainWalk(fundings, nil, 0)
+	if err := w.run(ctx, chain, onBlock); err != nil {
+		return nil, err
+	}
+	return w.verdicts(), nil
 }
 
 // CheckChannelsOnChain verifies every channel lnd lists as open before the
@@ -381,7 +621,7 @@ func (c *Core) CheckChannelsOnChain(ctx context.Context, onProgress func(SyncPro
 	if err != nil {
 		return nil, err
 	}
-	if len(chans) == 0 {
+	if len(chans) == 0 && c.walk == nil && len(savedFundings(c.dir())) == 0 {
 		c.checks.set(map[string]channelVerdict{})
 		return nil, nil
 	}
@@ -418,79 +658,92 @@ func (c *Core) CheckChannelsOnChain(ctx context.Context, onProgress func(SyncPro
 		if ch == nil {
 			return nil, fmt.Errorf("channel %s is open in lnd but not in its database", rpcChan.ChannelPoint)
 		}
-		key := ch.LocalChanCfg.MultiSigKey
-		res, err := wk.DeriveKey(ctx, &signrpc.KeyLocator{KeyFamily: int32(key.Family), KeyIndex: int32(key.Index)})
+		foreign, err := isForeign(ctx, wk, ch)
 		if err != nil {
-			return nil, fmt.Errorf("derive the key of channel %s: %w", rpcChan.ChannelPoint, err)
+			return nil, err
 		}
-		if !bytes.Equal(res.RawKeyBytes, key.PubKey.SerializeCompressed()) {
+		if foreign {
 			verdicts[rpcChan.ChannelPoint] = channelVerdict{verdict: verdictForeign}
 			c.progressf("  %s belongs to another node.", rpcChan.ChannelPoint)
 			continue
 		}
-		script, err := fundingPkScript(ch)
-		if err != nil {
-			return nil, fmt.Errorf("funding script of %s: %w", rpcChan.ChannelPoint, err)
-		}
-		fundings = append(fundings, channelFunding{
-			chanPoint:  rpcChan.ChannelPoint,
-			outpoint:   ch.FundingOutpoint,
-			pkScript:   script,
-			heightHint: fundingHeightHint(ch),
-			toUsScript: toUsScript(ch),
-		})
-	}
-
-	if len(fundings) > 0 {
-		c.progressf("Checking %d channel(s) on chain...", len(fundings))
-		// The stage is on screen from the first moment and keeps moving:
-		// an update twice a second, whatever the scan's speed.
-		started := time.Now()
-		report := func(height, from, tip uint32) {
-			if onProgress == nil {
-				return
-			}
-			p := SyncProgress{Stage: "channels", Height: height, Target: tip, Percent: 0, Remaining: -1,
-				Message: "Making sure your channels are still open"}
-			if tip > from && height >= from {
-				p.Percent = 100 * float64(height-from) / float64(tip-from)
-			}
-			// Time left from the rate so far, once there is a rate to speak of.
-			if elapsed := time.Since(started).Seconds(); elapsed >= 10 && height > from && tip >= height {
-				p.Remaining = int64(float64(tip-height) / (float64(height-from) / elapsed))
-			}
-			onProgress(p)
-		}
-		if onProgress != nil {
-			onProgress(SyncProgress{Stage: "channels", Percent: 0, Remaining: -1,
-				Message: "Making sure your channels are still open"})
-		}
-		var lastReport time.Time
-		scanned, err := scanFundingOutputs(ctx, chain, fundings, func(height, from, tip uint32) {
-			if height == tip || time.Since(lastReport) >= 500*time.Millisecond {
-				lastReport = time.Now()
-				report(height, from, tip)
-			}
-		})
+		f, err := fundingOf(ch)
 		if err != nil {
 			return nil, err
 		}
-		for point, v := range scanned {
-			verdicts[point] = v
+		fundings = append(fundings, f)
+	}
+
+	// Channels an earlier walk covered and lnd no longer lists as open: lnd
+	// has seen their close and is collecting their funds. The walk keeps
+	// following them, so what is still to collect does not depend on lnd's
+	// pending list (which fails on some old nodes).
+	open := map[string]bool{}
+	for _, f := range fundings {
+		open[f.chanPoint] = true
+	}
+	var earlier []channelFunding
+	if c.walk != nil {
+		earlier = c.walk.fundings()
+	} else {
+		earlier = savedFundings(c.dir())
+	}
+	for _, f := range earlier {
+		if _, listed := verdicts[f.chanPoint]; !listed && !open[f.chanPoint] {
+			fundings = append(fundings, f)
+		}
+	}
+	if len(fundings) > 0 {
+		c.progressf("Checking %d channel(s) on chain...", len(fundings))
+		// An earlier walk, of this run or saved by an earlier one, covers
+		// these channels up to the block it ended at: carry on from there.
+		walk := c.walk
+		for _, f := range fundings {
+			if walk != nil && !walk.has(f.chanPoint) {
+				walk = nil
+			}
+		}
+		if walk == nil {
+			var why string
+			if walk, why = loadWalk(c.dir(), chain, fundings); why != "" {
+				c.progressf("The saved chain check is not used (%s); checking from the start.", why)
+			}
+		}
+		if walk == nil {
+			best, err := chain.BestBlock()
+			if err != nil {
+				return nil, fmt.Errorf("read the chain tip: %w", err)
+			}
+			first, err := firstBlock(chain.BlockHeaders.FetchHeaderByHeight, uint32(best.Height))
+			if err != nil {
+				return nil, err
+			}
+			walk = newChainWalk(fundings, nil, first+1)
+		}
+		if err := walk.run(ctx, chain, walkProgress("channels", "Making sure your channels are still open", onProgress)); err != nil {
+			return nil, err
+		}
+		c.walk = walk
+		if err := walk.save(c.dir(), chain, walk.fundings()); err != nil {
+			return nil, fmt.Errorf("save the chain check: %w", err)
+		}
+		scanned := walk.verdicts()
+		for _, f := range fundings {
+			verdicts[f.chanPoint] = scanned[f.chanPoint]
 		}
 	}
 
 	var closed []SpentChannel
-	for _, rpcChan := range chans {
-		switch v := verdicts[rpcChan.ChannelPoint]; v.verdict {
+	for _, f := range fundings {
+		switch v := verdicts[f.chanPoint]; v.verdict {
 		case verdictSpent:
 			closed = append(closed, v.spent)
-			c.progressf("  %s closed on chain, tx %s.", rpcChan.ChannelPoint, v.spent.ClosingTxID)
+			c.progressf("  %s closed on chain, tx %s.", f.chanPoint, v.spent.ClosingTxID)
 			if v.spent.Collect > 0 {
 				c.progressf("  Collecting %d sat from this close.", v.spent.Collect)
 			}
 		case verdictUnverified:
-			c.progressf("  %s not confirmed on chain: %s.", rpcChan.ChannelPoint, v.reason)
+			c.progressf("  %s not confirmed on chain: %s.", f.chanPoint, v.reason)
 		}
 	}
 	c.checks.set(verdicts)
@@ -498,4 +751,31 @@ func (c *Core) CheckChannelsOnChain(ctx context.Context, onProgress func(SyncPro
 		c.progressf("%d channel(s) closed after this backup.", len(closed))
 	}
 	return closed, nil
+}
+
+// walkProgress reports a walk as a sync stage. The stage is on screen from
+// the first moment and keeps moving: an update twice a second, whatever the
+// walk's speed.
+func walkProgress(stage, message string, onProgress func(SyncProgress)) func(height, from, tip uint32) {
+	if onProgress == nil {
+		return nil
+	}
+	onProgress(SyncProgress{Stage: stage, Percent: 0, Remaining: -1, Message: message})
+	started := time.Now()
+	var lastReport time.Time
+	return func(height, from, tip uint32) {
+		if height != tip && time.Since(lastReport) < 500*time.Millisecond {
+			return
+		}
+		lastReport = time.Now()
+		p := SyncProgress{Stage: stage, Height: height, Target: tip, Percent: 0, Remaining: -1, Message: message}
+		if tip > from && height >= from {
+			p.Percent = 100 * float64(height-from) / float64(tip-from)
+		}
+		// Time left from the rate so far, once there is a rate to speak of.
+		if elapsed := time.Since(started).Seconds(); elapsed >= 10 && height > from && tip >= height {
+			p.Remaining = int64(float64(tip-height) / (float64(height-from) / elapsed))
+		}
+		onProgress(p)
+	}
 }

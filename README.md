@@ -12,8 +12,8 @@ command line tool, for macOS, Windows and Linux.
 
 If the Breez app is still on your phone, make a safety copy first: open the
 menu, then **Developers**, then **Export DB Files**, and keep the zip
-somewhere safe. The tool does not need it, but it holds everything the app
-knows should anything go wrong.
+somewhere safe. The tool does not need it, and it can restore from it: choose
+"backup file" and pick that zip.
 
 ## Get it
 
@@ -32,10 +32,11 @@ check it with `sha256sum -c SHA256SUMS`.
    Sign-in happens in your browser, on Google's or Apple's own page.
 2. **Pick the backup** and enter its backup phrase if it is encrypted.
    PIN-encrypted backups (deprecated years ago) cannot be restored.
-3. **Sync.** The restored app catches up with the bitcoin chain and checks
-   its history, with progress and a time estimate. The first sync of an old
-   app takes a while: one from 2019 took 90 minutes. The app restarts
-   itself once along the way.
+3. **Sync.** The restored app catches up with the bitcoin chain, looks for
+   funds received after the last backup and checks its history, with
+   progress and a time estimate. The first sync of an old app takes a
+   while: one from 2019 took 90 minutes. The app restarts itself along the
+   way.
 4. **Your funds.** Three numbers: In channels, Pending, On-chain. **History**
    lists every payment, deposit, withdrawal and channel close, and exports
    as CSV.

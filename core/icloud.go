@@ -73,12 +73,12 @@ func (c *icloudClient) post(database, subpath string, body interface{}, dst inte
 	req.Header.Set("Content-Type", "application/json")
 	res, err := c.http.Do(req)
 	if err != nil {
-		return 0, err
+		return 0, withoutURL(err)
 	}
 	defer res.Body.Close()
-	data, _ := io.ReadAll(res.Body)
-	if dst != nil {
-		_ = json.Unmarshal(data, dst)
+	data, err := io.ReadAll(res.Body)
+	if err != nil {
+		return res.StatusCode, fmt.Errorf("cloudkit %s: read the reply: %w", subpath, err)
 	}
 	if res.StatusCode >= 400 {
 		var e struct {
@@ -88,7 +88,24 @@ func (c *icloudClient) post(database, subpath string, body interface{}, dst inte
 		_ = json.Unmarshal(data, &e)
 		return res.StatusCode, fmt.Errorf("cloudkit %s: %s %s", subpath, e.ServerErrorCode, e.Reason)
 	}
+	if dst != nil {
+		// A reply that cannot be read is an error, never "no backups".
+		if err := json.Unmarshal(data, dst); err != nil {
+			return res.StatusCode, fmt.Errorf("cloudkit %s: unreadable reply: %w", subpath, err)
+		}
+	}
 	return res.StatusCode, nil
+}
+
+// withoutURL strips the request URL from a network error: it carries the
+// session token in its query, and Go prints the whole URL, which would put
+// the token into the log the user saves for support.
+func withoutURL(err error) error {
+	var ue *url.Error
+	if errors.As(err, &ue) {
+		return fmt.Errorf("%s iCloud: %w", strings.ToLower(ue.Op), ue.Err)
+	}
+	return err
 }
 
 // icloudSignIn returns a client with a valid user session, reusing a cached
@@ -125,7 +142,7 @@ func (c *Core) icloudSignIn(ctx context.Context) (*icloudClient, error) {
 	}
 	res, err := client.http.Do(req)
 	if err != nil {
-		return nil, err
+		return nil, withoutURL(err)
 	}
 	data, _ := io.ReadAll(res.Body)
 	res.Body.Close()
@@ -161,7 +178,7 @@ func (c *icloudClient) sessionValid() (bool, error) {
 	}
 	res, err := c.http.Do(req)
 	if err != nil {
-		return false, err
+		return false, withoutURL(err)
 	}
 	defer res.Body.Close()
 	return res.StatusCode == 200, fmt.Errorf("HTTP %d", res.StatusCode)
@@ -255,19 +272,36 @@ func (r ckRecord) asset(field string) (downloadURL string, ok bool) {
 
 // snapshots lists the BackupSnapshot records in the user's private database.
 func (c *icloudClient) snapshots() ([]backup.SnapshotInfo, map[string]ckRecord, error) {
-	var res struct {
-		Records []ckRecord `json:"records"`
-	}
-	body := map[string]interface{}{
-		"query":  map[string]interface{}{"recordType": "BackupSnapshot"},
-		"zoneID": map[string]string{"zoneName": "_defaultZone"},
-	}
-	if _, err := c.post("private", "records/query", body, &res); err != nil {
-		return nil, nil, err
+	// CloudKit answers in pages: a reply may carry a continuation marker,
+	// even with few or no records in it.
+	var all []ckRecord
+	marker := ""
+	for page := 0; ; page++ {
+		var res struct {
+			Records            []ckRecord `json:"records"`
+			ContinuationMarker string     `json:"continuationMarker"`
+		}
+		body := map[string]interface{}{
+			"query":  map[string]interface{}{"recordType": "BackupSnapshot"},
+			"zoneID": map[string]string{"zoneName": "_defaultZone"},
+		}
+		if marker != "" {
+			body["continuationMarker"] = marker
+		}
+		if _, err := c.post("private", "records/query", body, &res); err != nil {
+			return nil, nil, err
+		}
+		all = append(all, res.Records...)
+		if marker = res.ContinuationMarker; marker == "" {
+			break
+		}
+		if page > 1000 {
+			return nil, nil, errors.New("iCloud keeps answering with more pages of backups")
+		}
 	}
 	var snaps []backup.SnapshotInfo
 	records := map[string]ckRecord{}
-	for _, r := range res.Records {
+	for _, r := range all {
 		encType := r.str("backupEncryptionType")
 		modified := time.UnixMilli(r.Modified.Timestamp)
 		if ts := r.str("timestamp"); ts != "" {
@@ -294,51 +328,46 @@ func (c *icloudClient) snapshots() ([]backup.SnapshotInfo, map[string]ckRecord, 
 // download fetches the backup files of a record into the work dir's tmp
 // directory and returns their paths: either a single zip or the three
 // legacy database files.
-func (c *icloudClient) download(workDir string, r ckRecord) ([]string, error) {
-	dir := filepath.Join(workDir, "tmp", "icloud")
-	if err := os.MkdirAll(dir, 0700); err != nil {
-		return nil, err
-	}
-	fetch := func(field, name string) (string, error) {
+func (c *icloudClient) download(r ckRecord) (map[string][]byte, error) {
+	fetch := func(field, name string) ([]byte, error) {
 		u, ok := r.asset(field)
 		if !ok {
-			return "", fmt.Errorf("record has no %s asset", field)
+			return nil, fmt.Errorf("record has no %s asset", field)
 		}
 		u = strings.ReplaceAll(u, "${f}", name)
 		res, err := c.http.Get(u)
 		if err != nil {
-			return "", err
+			return nil, fmt.Errorf("download %s: %w", name, withoutURL(err))
 		}
 		defer res.Body.Close()
 		if res.StatusCode != 200 {
-			return "", fmt.Errorf("download %s: HTTP %d", name, res.StatusCode)
+			return nil, fmt.Errorf("download %s: HTTP %d", name, res.StatusCode)
 		}
-		p := filepath.Join(dir, name)
-		f, err := os.Create(p)
+		content, err := io.ReadAll(res.Body)
 		if err != nil {
-			return "", err
+			return nil, fmt.Errorf("download %s: %w", name, err)
 		}
-		defer f.Close()
-		if _, err := io.Copy(f, res.Body); err != nil {
-			return "", err
+		if res.ContentLength > 0 && int64(len(content)) != res.ContentLength {
+			return nil, fmt.Errorf("download %s: got %d of %d bytes", name, len(content), res.ContentLength)
 		}
-		return p, nil
+		return content, nil
 	}
 
+	out := map[string][]byte{}
 	if _, ok := r.asset("backup"); ok {
-		p, err := fetch("backup", "backup.zip")
+		content, err := fetch("backup", "backup.zip")
 		if err != nil {
 			return nil, err
 		}
-		return []string{p}, nil
+		out["backup.zip"] = content
+		return out, nil
 	}
-	var paths []string
 	for _, f := range []struct{ field, name string }{{"walletdb", "wallet.db"}, {"channeldb", "channel.db"}, {"breezdb", "breez.db"}} {
-		p, err := fetch(f.field, f.name)
+		content, err := fetch(f.field, f.name)
 		if err != nil {
 			return nil, err
 		}
-		paths = append(paths, p)
+		out[f.name] = content
 	}
-	return paths, nil
+	return out, nil
 }

@@ -297,7 +297,7 @@
     }
   }
 
-  const stageOrder = ["start", "connecting", "headers", "rescan", "channels"];
+  const stageOrder = ["start", "connecting", "headers", "addresses", "rescan", "channels"];
   function elapsed() {
     if (!ui.rescanStart) return "0:00";
     const s = Math.floor((Date.now() - ui.rescanStart) / 1000);
@@ -339,10 +339,11 @@
     $("#sync-fill").classList.toggle("indeterminate", unknown);
     $("#sync-fill").classList.toggle("shimmer", !unknown && p.stage !== "synced");
     $("#sync-percent").textContent = unknown ? "working" : (p.stage === "synced" ? "100%" : pct.toFixed(1) + "%");
-    // The two long stages show elapsed time and time left; each stage
-    // counts from its own start.
+    // The long stages show elapsed time and time left; each stage counts
+    // from its own start.
     const rescan = p.stage === "rescan";
-    const live = rescan || p.stage === "channels";
+    const walk = p.stage === "channels" || p.stage === "addresses";
+    const live = rescan || walk;
     if (ui.liveStage !== p.stage) { ui.liveStage = p.stage; ui.rescanStart = live ? Date.now() : 0; }
     $("#sync-live").classList.toggle("hidden", !live);
     $$("#sync-live .rescan-only").forEach((d) => d.classList.toggle("hidden", !rescan));
@@ -354,7 +355,7 @@
       $("#sync-blocks").textContent = unknown ? "" : "about block " + p.height.toLocaleString("en-US") + " of " + p.target.toLocaleString("en-US");
       $("#live-through").textContent = p.throughTime ? new Date(p.throughTime * 1000).toLocaleDateString(undefined, { dateStyle: "medium" }) : "not yet";
     } else {
-      $("#sync-blocks").textContent = p.height ? "block " + p.height.toLocaleString("en-US") + " of " + (p.stage === "channels" ? "" : "about ") + p.target.toLocaleString("en-US") : "";
+      $("#sync-blocks").textContent = p.height ? "block " + p.height.toLocaleString("en-US") + " of " + (walk ? "" : "about ") + p.target.toLocaleString("en-US") : "";
     }
     $("#sync-message").textContent = p.message || "";
     setStage(p.stage === "synced" ? "channels" : p.stage);
@@ -400,10 +401,16 @@
       advice = "Channels still open. Email the list to contact@breez.technology.";
     } else if ((st.closedOnChain || []).some((c) => c.collect > 0)) {
       advice = "Collecting funds from a closed channel. Keep the app open.";
+    } else if (st.unresolved) {
+      advice = "A closed channel is being settled. Keep the app open.";
     } else if (st.pending.length) {
       advice = "Channels are closing. Leave this window open, or come back later, until the funds show as ready to send. Then send the on-chain balance.";
     } else if (hasOnchain) {
       advice = "Everything is on-chain and spendable. Send it to a bitcoin address you control.";
+    } else if (st.outgoing) {
+      advice = "Your transaction is waiting for its confirmation.";
+    } else if (st.onchainUnconfirmed > 0) {
+      advice = "Funds are waiting for their confirmation. Keep the app open.";
     } else {
       advice = "Nothing left to recover in this app.";
     }
@@ -477,7 +484,7 @@
   setInterval(async () => {
     const st = ui.status;
     if (ui.screen !== "wallet" || ui.busy || !st) return;
-    const moving = st.pending.length || st.onchainUnconfirmed > 0 || (st.closedOnChain || []).some((c) => c.collect > 0);
+    const moving = st.pending.length || st.unresolved || st.outgoing || st.onchainUnconfirmed > 0 || (st.closedOnChain || []).some((c) => c.collect > 0);
     if (!moving) return;
     try { ui.status = await api.GetStatus(); if (ui.screen === "wallet") renderWallet(); } catch (e) { /* next round */ }
   }, 30000);

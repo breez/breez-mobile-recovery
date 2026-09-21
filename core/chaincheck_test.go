@@ -3,7 +3,9 @@ package core
 import (
 	"context"
 	"errors"
+	"os"
 	"testing"
+	"time"
 
 	"github.com/btcsuite/btcd/btcutil"
 	"github.com/btcsuite/btcd/btcutil/gcs"
@@ -15,6 +17,12 @@ import (
 	"github.com/lightningnetwork/lnd/lnrpc"
 	"github.com/lightningnetwork/lnd/lnwire"
 )
+
+// Tests fail fast: no waiting for a network that is not there.
+func TestMain(m *testing.M) {
+	fetchPatience = 0
+	os.Exit(m.Run())
+}
 
 // fakeChain has a tip and fails every other query.
 type fakeChain struct {
@@ -259,5 +267,70 @@ func TestDeadUnconfirmed(t *testing.T) {
 	}
 	if got := deadUnconfirmed([]*lnrpc.Transaction{incoming, liveSweep}); got != 0 {
 		t.Errorf("live unconfirmed money counted as dead: %d", got)
+	}
+
+	// lnd's sweep of an output that already counts as Pending: the same
+	// money must not show a second time as unconfirmed.
+	if got := notOnItsWay([]*lnrpc.Transaction{incoming, liveSweep}, map[string]bool{"closeC:0": true}); got != 864 {
+		t.Errorf("sweep of a counted output: %d taken off, want 864", got)
+	}
+	// Fee bumps: with neutrino the replaced sweeps stay in the wallet. Only
+	// the newest counts.
+	bump1 := &lnrpc.Transaction{TxHash: "bump1", TimeStamp: 100, Amount: 900, PreviousOutpoints: prev("closeD:0")}
+	bump2 := &lnrpc.Transaction{TxHash: "bump2", TimeStamp: 200, Amount: 880, PreviousOutpoints: prev("closeD:0")}
+	bump3 := &lnrpc.Transaction{TxHash: "bump3", TimeStamp: 300, Amount: 864, PreviousOutpoints: prev("closeD:0")}
+	if got := notOnItsWay([]*lnrpc.Transaction{bump2, bump3, bump1, incoming}, nil); got != 900+880 {
+		t.Errorf("replaced sweeps: %d taken off, want %d", got, 900+880)
+	}
+}
+
+// Spending the close's anchor is not collecting the channel's funds.
+func TestSweptByNeedsTheFunds(t *testing.T) {
+	prev := func(ops ...string) []*lnrpc.PreviousOutPoint {
+		var out []*lnrpc.PreviousOutPoint
+		for _, op := range ops {
+			out = append(out, &lnrpc.PreviousOutPoint{Outpoint: op})
+		}
+		return out
+	}
+	want := map[string]int64{"close": 50000}
+	anchorBump := &lnrpc.Transaction{TxHash: "cpfp", NumConfirmations: 10, Amount: -1200, PreviousOutpoints: prev("close:2", "wallet:0")}
+	if sweptBy([]*lnrpc.Transaction{anchorBump}, want)["close"] {
+		t.Error("an anchor spend counts as the sweep of the close")
+	}
+	sweep := &lnrpc.Transaction{TxHash: "sweep", NumConfirmations: 3, Amount: 49500, PreviousOutpoints: prev("close:0")}
+	if !sweptBy([]*lnrpc.Transaction{anchorBump, sweep}, want)["close"] {
+		t.Error("the real sweep does not count")
+	}
+	unconfirmed := &lnrpc.Transaction{TxHash: "sweep", NumConfirmations: 0, Amount: 49500, PreviousOutpoints: prev("close:0")}
+	if sweptBy([]*lnrpc.Transaction{unconfirmed}, want)["close"] {
+		t.Error("an unconfirmed sweep counts")
+	}
+}
+
+// A request that fails for a while (a laptop that slept) does not end the
+// walk; one that keeps failing does, with its error.
+func TestPatiently(t *testing.T) {
+	fetchPatience = time.Minute
+	defer func() { fetchPatience = 0 }()
+	calls := 0
+	err := patiently(context.Background(), "test", func() error {
+		if calls++; calls < 2 {
+			return errors.New("did not get response before timeout")
+		}
+		return nil
+	})
+	if err != nil || calls != 2 {
+		t.Errorf("after an outage: %v after %d calls", err, calls)
+	}
+	fetchPatience = 0
+	if err := patiently(context.Background(), "test", func() error { return errors.New("gone") }); err == nil {
+		t.Error("an error that stays was swallowed")
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	fetchPatience = time.Hour
+	if err := patiently(ctx, "test", func() error { return errors.New("down") }); !errors.Is(err, context.Canceled) {
+		t.Errorf("a stopped walk: %v, want cancelled", err)
 	}
 }

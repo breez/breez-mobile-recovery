@@ -46,13 +46,13 @@ folder, useful for testing next to a real one.
 `go test ./core` covers the phrase to key derivation and decryption.
 `go vet -tags walletrpc,chainrpc ./core . && go vet -tags webkit2_41,walletrpc,chainrpc ./ui` before
 committing. The `walletrpc` tag compiles lnd's WalletKit RPC in; without
-it the address look-ahead after restore fails with an unimplemented RPC.
+it the search for funds paid after the backup fails with an unimplemented RPC.
 
 ## UI work without a node
 
 `ui/frontend/mock/serve.sh` serves the frontend with a mocked Go backend
 on http://127.0.0.1:8765/. Query parameters pick the state: `?hasNode=1`,
-`?scenario=channels|pending|onchain`, `?slow=list|restore|sync|rescan1|rescan2|channels`
+`?scenario=channels|pending|onchain`, `?slow=list|restore|sync|addresses|rescan1|rescan2|channels`
 holds a stage so it can be screenshotted. The History screen is reached
 with `?hasNode=1`, Continue, then History (mock ledger in mock.js). The
 mock's method list must match `ui/app.go`; add a stub when adding a bound
@@ -75,6 +75,21 @@ Every value is rendered with textContent; keep it that way.
   `channeldbservice.Get`) and its logger are refcounted singletons that
   ignore the folder argument after the first call: a process is bound to
   the first folder the library was initialised on (`boundLibDir`).
+- One restore path for every source (core/restore.go): fetch into memory,
+  decrypt and check ALL files, write a staging folder, one rename into
+  place; only then is an earlier restore moved aside (never deleted), the
+  backup selected and the Drive copy marked. The library's RestoreBackup
+  is NOT used: it returns the result of an unrelated call and so reported
+  a failed restore as done (bindings/api.go:317-328), marked the snapshot
+  before decrypting, and downloaded through the system temp folder
+  (cross-volume rename failure on Windows). Drive is downloaded with the
+  tool's own client (core/drive.go) and marked with the id written into
+  the restored folder (`backup/breez_backup_id`), the one the library
+  compares with. A folder is a restored app only with all three node
+  files (`hasNode`); a wallet without its channel database would start
+  with an empty one and show no channels. One program per work folder
+  (core/lock.go). Bitcoin peers the user once set on the phone travel in
+  breez.db and replace the configured ones: initLibrary resets them.
 - One folder per backup (core/dirs.go): the work folder holds the sign-ins,
   `current` and `backups/<node id or zip-hash>/`. Up to alpha.26 every
   restore landed in the one work folder, so a second backup inherited the
@@ -100,42 +115,116 @@ Every value is rendered with textContent; keep it that way.
   not work: "Rescanned through" lines (only every 10k blocks before the
   birthday), neutrino trace level (hex dumps of peer messages, and the
   per-block line never fired), GetRecoveryInfo (needs a recovery window).
-- A restored wallet only scans addresses it has already derived, and the
-  backup only knows the addresses in use at backup time. Funds the phone
-  received or swept after its last backup sit on later addresses and were
-  invisible (that is how Roy's 15,721 sat went missing on a second
-  restore). On the first start after a restore core derives 50 addresses
-  on each of four branches through WalletKit NextAddr (needs the
-  `walletrpc` build tag), writes FORCE_RESCAN and the `addresses-extended`
-  marker, stops the node and returns ErrRestartRequired; the app relaunches
-  itself with BREEZ_RECOVERY_RELAUNCH=continue and the CLI asks to be run
-  again. Re-initialising the library in-process after a stop hangs, which
-  is why it is a program restart. The look-ahead was 500 per branch in
-  alpha.12 to alpha.20; that made Roy's folder redo the whole history
-  check (a second multi-hour pass) and slowed matching from 76 to 48
-  blocks/s, so it is 50 since alpha.21. Any change to the address set
-  forces a rescan on existing restores: state that cost before making one.
-- KNOWN FLAW, not fixed yet (found by the backup matrix 2026-09-21): the
-  look-ahead derives its window with NextAddr, which advances the wallet's
-  address counter, so the first address lnd hands out afterwards is the
-  one right past the window. Funds a restore collects (lnd's sweep of a
-  closed channel) therefore land exactly where a LATER fresh restore of the
-  same backup does not look. Proven: Roy's 864 sat sit at
-  bc1p8x83...6uy, and a fresh restore of the same backup returns that very
-  address as its next one and shows 0 sat. No window size cures it: a
-  restore's next address is always just outside its own window. Nothing is
-  lost (the first folder holds the funds, the keys derive from the backup)
-  but a user who restores, lets lnd collect, deletes the folder before
-  sending and restores again would see nothing. The cure is a gap limit:
-  keep looking past the last used address. lnd's own recovery window is
-  only reachable through the wallet unlocker, which the library does not
-  use (noseedbackup). Plan: derive the next N addresses per branch offline
-  from the account xpubs (walletrpc ListAccounts), add their scripts to
-  the filter walk in chaincheck.go from the backup's height on, and when
-  one was paid, derive up to it with NextAddr, write FORCE_RESCAN and
-  restart; repeat until nothing beyond the window is found. Until then:
-  do not delete a backup's folder before its funds are sent out (the
-  README says so).
+- Funds paid after the last backup (core/addrscan.go). A restored wallet
+  only checks addresses it has already derived, and the backup only knows
+  the addresses in use at backup time. Two real cases sit past them: the
+  phone swept a closed channel after its last backup (Roy's 15,721 sat),
+  and an earlier restore with this tool collected funds and its folder is
+  gone (Roy's 864 sat). Releases alpha.12 to alpha.30 derived a window of
+  addresses THROUGH the wallet (WalletKit NextAddr, 500 then 50 per
+  branch). That was a flaw: NextAddr moves the wallet's address counter,
+  so the next address lnd hands out, for its sweep of a closed channel, is
+  the one right past the window, exactly where a LATER restore of the same
+  backup does not look. No window size cures it. Proven 2026-09-21: a
+  fresh restore of Roy's backup 0229fda8 returned bc1p8x83...6uy, the very
+  address holding his 864 sat, as its next address and showed 0 sat.
+  Since alpha.31 the app looks ahead WITHOUT touching the wallet: it reads
+  the account public keys (walletrpc ListAccounts), derives the addresses
+  itself and looks for them in the same filter walk that checks the
+  channels (design, source references and cost table:
+  docs/2026-09-21-funds-after-backup-design.md; everything the source
+  audits found and how it was fixed: docs/2026-09-21-audit-findings.md).
+  Two ways find a paid address. (1) Following the money: when a channel is
+  found closed the walk follows EVERY output of the closing transaction
+  through two spends (close, second-level HTLC transaction, sweep), and
+  every block it opens is searched for the next 1,000 addresses of every
+  branch, the nested account included. That finds what a close paid out
+  wherever its sweep went, and it has to: lnd takes a NEW address for
+  every sweep it PUBLISHES (sweeper.go:1694-1715), and with neutrino every
+  start publishes again, so a sweep's address can be far out. (2) The gap,
+  for funds that did not come out of a channel in the backup (a plain
+  payment, the phone's sweep of a close already under way): 40 addresses
+  of the four branches (witness key hash and taproot, receive and change)
+  are in the filter match from the wallet's birthday on, and the search
+  is complete when the 20 addresses after the highest paid one were
+  looked for in every block (the standard gap; an interim 51 was a
+  workaround for alpha.30's own flaw and is gone). A find past the first
+  20 brings more addresses into the match, and those get a pass over only
+  the blocks before they joined. THE COST UNIT IS A PASS, NOT A SCRIPT: a
+  filter is 13 to 21 KB, a walk from 2021 is 4 to 5 GB, neutrino keeps
+  none on disk (the library sets no PersistToDisk, memory cache about
+  2,000 filters), while each script opens one block in 784,931 by false
+  positive. Only when something was paid that the wallet does not know is
+  the wallet touched: the finds go to `found-funds.json`, a fresh history
+  check is ordered FIRST (`history-recheck`; a crash half way still
+  re-checks on the next start), the counters are read again (lnd may have
+  handed out addresses meanwhile), NextAddr advances each branch up to the
+  paid address and the last address returned must equal the one derived
+  here, then the app restarts. The next StartNode drops the wallet's
+  history ITSELF (the library's dropwtx.Drop, called before Init, error
+  returned) and removes the order only then. The library's FORCE_RESCAN
+  file is NOT used: its Init only logs a failed drop, removes the file
+  when its second, unrelated drop succeeded, and throws away lnd's scan
+  positions. After the history check `verifyFound` requires every find in
+  the wallet's transactions, or the sync stops with an error. Before any
+  of it the derivation is checked against the wallet: the last address
+  the wallet derived on a branch must be the one this code derives at
+  that index, or the search fails loudly. The search runs once per restore
+  (`addresses-extended` marker, which folders of older releases carry too,
+  so they are left alone) inside WaitSynced, after this process has seen
+  the headers catch up and before the history check is waited for: a hit
+  found first costs minutes, a hit found after the history check would
+  cost a second history check. Its walk is kept (`Core.walk`) and saved
+  (`chain-walk.json`, core/walkstate.go), and the channel check carries on
+  from the block it ended at: after the sync, after the restart a find
+  causes, and on every later start. Up to alpha.30 every start walked the
+  whole range again. The saved walk is used only if its format, every
+  channel's scripts and height, and the hash of the block it stands on (6
+  below the tip it reached) all match; otherwise it is discarded with a
+  log line and the walk starts over. The walk keeps following a channel
+  after lnd stops listing it as open, and the funds screen takes what a
+  closed channel still owes from the walk (core/node.go status): lnd's
+  PendingChannels fails on some old nodes, lags after a sweep confirmed,
+  and counts a published sweep a second time. The walk never asks below
+  the node's first block (`floor`; a foreign channel in a mixed-up backup
+  can be older) and fetches that one block directly.
+  The walk starts at the wallet's birthday (`wallet-birthday` file, read
+  from wallet.db with bbolt BEFORE lnd's first start, lnd holds the
+  file's lock afterwards). Breez backups carry no sync height (the app
+  reset it to the genesis block) and the zip entries carry no dates, so
+  the birthday is the only start that is always safe. The library does
+  not keep the whole chain: it bootstraps the headers from a point shortly
+  before the wallet's birthday (first header 687,000 for a wallet of 13
+  Jun 2021, 557,000 for one of 5 Jan 2019) and the header file is EMPTY
+  below it. Every empty header has the same hash, and asking neutrino for
+  a filter or header there fails with "target hash not found in index".
+  The first real header's own filter cannot be fetched either
+  ("got entire filter, but job was not finished"): a filter is verified
+  against the filter header of the block before. So the walk starts two
+  days before the birthday but never below the block after the first
+  real header (`heightBefore`), which on the four backups looked at is
+  18 hours to 3 days before the wallet was created; the backup matrix caught this, the
+  first test backup happened to sit above the hole. Any change to the address set forces a rescan on
+  existing restores: state that cost before making one.
+- History shortcut (core/syncskip.go, study and what was built:
+  docs/2026-09-21-skip-history-check-study.md). lnd's own history check
+  after a restore is a second full pass over the filters and finds nothing
+  for a wallet that never had an on-chain transaction, the usual Breez
+  user. The app's walk watches the wallet's own scripts too (read with the
+  wallet closed, before lnd starts); when the search found nothing, the
+  script count equals the one lnd logs for its check, no block paid any of
+  them and the wallet's transaction list is empty, the wallet's sync state
+  is set to 6 blocks below the walk's end (144 hashes, birthday block put
+  back VERIFIED or btcwallet locates it again and resets everything; one
+  transaction, read back) before the next start. Anything else: nothing is
+  written and lnd's ordinary check runs. A wallet that then logs "Unable
+  to synchronize wallet to chain" gets the full check ordered.
+- First start after a restore: lnd must start at the chain tip (see the
+  closed-channel entry below), so the first process only waits for the
+  headers, writes `chain-ready` and the app restarts itself
+  (BREEZ_RECOVERY_RELAUNCH=continue; the CLI asks to be run again).
+  Re-initialising the library in-process after a stop hangs, which is why
+  it is a program restart.
 - Rescan progress persists in wallet.db, a restart resumes where it was.
   A `FORCE_RESCAN` file in the work folder makes the library drop the
   transaction store and rescan from the birthday; handy for testing.

@@ -52,12 +52,19 @@ var ErrLibraryBound = errors.New("the app has to restart before it can work on a
 // second Core in the same process is bound just the same.
 var boundLibDir string
 
+// hasNode reports whether the folder holds a restored app: all three node
+// files. A wallet without its channel database is not one (lnd would start
+// on it with an empty channel database and show no channels).
 func hasNode(dir, network string) bool {
 	if dir == "" {
 		return false
 	}
-	_, err := os.Stat(filepath.Join(dir, "data", "chain", "bitcoin", network, "wallet.db"))
-	return err == nil
+	for name, rel := range nodeFileTargets(network) {
+		if _, err := os.Stat(filepath.Join(dir, rel, name)); err != nil {
+			return false
+		}
+	}
+	return true
 }
 
 // dir is the node folder of the backup in use, "" when none is selected.
@@ -95,7 +102,7 @@ func (c *Core) selectBackup(name string) error {
 	if err := os.MkdirAll(dir, 0700); err != nil {
 		return err
 	}
-	if err := os.WriteFile(filepath.Join(c.cfg.WorkDir, currentFile), []byte(name+"\n"), 0600); err != nil {
+	if err := writeFileAtomic(filepath.Join(c.cfg.WorkDir, currentFile), []byte(name+"\n")); err != nil {
 		return err
 	}
 	c.nodeDir = dir
@@ -234,35 +241,4 @@ func (c *Core) migrateLegacyNode() error {
 	}
 	c.progressf("The restored app now has its own folder: %s", dest)
 	return nil
-}
-
-// prepareBackupDir selects the folder a restore writes into. A backup that
-// is already restored there is refused unless force is set, and then the
-// old folder is moved aside, never deleted: it holds a wallet.
-func (c *Core) prepareBackupDir(name string, force bool) error {
-	if c.layoutErr != nil {
-		return c.layoutErr
-	}
-	if !backupNameRE.MatchString(name) {
-		return fmt.Errorf("invalid backup name %q", name)
-	}
-	dir := c.backupDir(name)
-	if boundLibDir != "" && boundLibDir != dir {
-		return ErrLibraryBound
-	}
-	if hasNode(dir, c.cfg.Network) {
-		if !force {
-			return ErrNodeExists
-		}
-		if boundLibDir != "" {
-			// The library holds this folder's databases open.
-			return ErrLibraryBound
-		}
-		aside := dir + ".replaced-" + time.Now().Format("20060102-150405")
-		if err := os.Rename(dir, aside); err != nil {
-			return err
-		}
-		c.progressf("The earlier restore of this backup was moved to %s.", aside)
-	}
-	return c.selectBackup(name)
 }

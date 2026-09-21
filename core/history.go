@@ -570,10 +570,10 @@ func (b *ledger) addPendingChannels(pend *lnrpc.PendingChannelsResponse) {
 		b.entries = append(b.entries, Entry{Time: now, Kind: KindChannelClose, Title: "Channel closing", Detail: "Waiting for the closing transaction to confirm.", Amount: p.Channel.LocalBalance, Status: "closing", TxID: p.ClosingTxid})
 		b.explained[p.ClosingTxid] = true
 	}
-	want := map[string]bool{}
+	want := map[string]int64{}
 	for _, p := range pend.PendingForceClosingChannels {
 		if p.BlocksTilMaturity <= 0 && len(p.PendingHtlcs) == 0 && p.ClosingTxid != "" {
-			want[p.ClosingTxid] = true
+			want[p.ClosingTxid] = p.LimboBalance
 		}
 	}
 	swept := sweptBy(b.txs, want)

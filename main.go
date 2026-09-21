@@ -272,17 +272,30 @@ func promptPhrase() string {
 // ---- status ---------------------------------------------------------------
 
 func startAndSync(ctx context.Context, c *core.Core) error {
-	if err := c.StartNode(ctx); err != nil {
+	runAgain := func(err error) {
 		if errors.Is(err, core.ErrRestartRequired) {
 			fmt.Fprintln(out, "The node was prepared in this run. Run the same command again to continue.")
 			os.Exit(0) // not c.Stop(): it may hang, and the exit releases everything
 		}
+	}
+	if err := c.StartNode(ctx); err != nil {
+		runAgain(err)
 		return err
 	}
-	if err := c.WaitSynced(ctx, func(p core.SyncProgress) { fmt.Fprintln(out, p.Message) }); err != nil {
+	var lastLine time.Time
+	err := c.WaitSynced(ctx, func(p core.SyncProgress) {
+		if p.Stage != "addresses" {
+			fmt.Fprintln(out, p.Message)
+		} else if time.Since(lastLine) >= 10*time.Second || p.Height == p.Target {
+			lastLine = time.Now()
+			fmt.Fprintf(out, "%s, block %d of %d\n", p.Message, p.Height, p.Target)
+		}
+	})
+	if err != nil {
+		runAgain(err)
 		return err
 	}
-	_, err := c.CheckChannelsOnChain(ctx, func(p core.SyncProgress) {
+	_, err = c.CheckChannelsOnChain(ctx, func(p core.SyncProgress) {
 		fmt.Fprintf(out, "%s, block %d of %d\n", p.Message, p.Height, p.Target)
 	})
 	return err
@@ -318,9 +331,12 @@ func cmdStatus(ctx context.Context, c *core.Core, args []string) error {
 	return nil
 }
 
-// collecting reports whether money is on its way into the on-chain balance.
+// collecting reports whether money is on its way into the on-chain balance:
+// a closed channel's output lnd has yet to collect, a close lnd is
+// resolving (it publishes its sweep only while it runs, when the next block
+// arrives), or a transaction waiting for its confirmation.
 func collecting(st *core.Status) bool {
-	if st.OnchainUnconfirmed > 0 {
+	if st.OnchainUnconfirmed > 0 || st.InPending > 0 || len(st.Pending) > 0 || st.Unresolved > 0 || st.Outgoing > 0 {
 		return true
 	}
 	for _, c := range st.ClosedOnChain {
@@ -386,7 +402,7 @@ func cmdSweep(ctx context.Context, c *core.Core, args []string) error {
 	if *address == "" {
 		return errors.New("--address is required")
 	}
-	if err := core.ValidateAddress(*address); err != nil {
+	if err := c.ValidateAddress(*address); err != nil {
 		return fmt.Errorf("invalid address: %w", err)
 	}
 	if err := startAndSync(ctx, c); err != nil {

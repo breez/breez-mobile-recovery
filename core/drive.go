@@ -3,11 +3,13 @@ package core
 import (
 	"context"
 	"fmt"
+	"io"
 	"sort"
 	"strings"
 	"time"
 
 	"google.golang.org/api/drive/v3"
+	"google.golang.org/api/googleapi"
 	"google.golang.org/api/option"
 )
 
@@ -103,4 +105,98 @@ func driveBackupFilesTime(ctx context.Context, svc *drive.Service, folderID stri
 		}
 	}
 	return newest, nil
+}
+
+// driveBackup is a backup fetched from Drive, not yet placed.
+type driveBackup struct {
+	files map[string][]byte // what the backup folder holds, by file name
+	svc   *drive.Service
+	node  string // id of the node's snapshot folder
+}
+
+// downloadDriveBackup fetches the files of the node's newest backup into
+// memory. It only reads. (The library's own restore is not used: its
+// RestoreBackup returns the result of an unrelated call and so reports a
+// failed restore as done, bindings/api.go:317-328; it marks the snapshot as
+// restored before it has decrypted anything; and it downloads through the
+// system's temp folder, which fails across drives on Windows.)
+func downloadDriveBackup(ctx context.Context, auth *googleAuth, nodeID string) (*driveBackup, error) {
+	svc, err := drive.NewService(ctx, option.WithTokenSource(auth.src))
+	if err != nil {
+		return nil, err
+	}
+	folders, err := driveList(ctx, svc, "'appDataFolder' in parents and name = '"+driveSnapshotPrefix+nodeID+"'", "files(id,name,appProperties)")
+	if err != nil {
+		return nil, fmt.Errorf("find the backup in Google Drive: %w", err)
+	}
+	if len(folders) != 1 {
+		return nil, fmt.Errorf("Google Drive holds %d backups of node %s, expected one", len(folders), nodeID)
+	}
+	active := folders[0].AppProperties[driveActiveFolderProp]
+	if active == "" {
+		return nil, fmt.Errorf("the backup of node %s in Google Drive has no files", nodeID)
+	}
+	list, err := driveList(ctx, svc, fmt.Sprintf("'%s' in parents", active), "files(id,name,size)")
+	if err != nil {
+		return nil, fmt.Errorf("list the backup's files in Google Drive: %w", err)
+	}
+	wanted := map[string]bool{"backup.zip": true}
+	for name := range nodeFileTargets("") {
+		wanted[name] = true
+	}
+	b := &driveBackup{files: map[string][]byte{}, svc: svc, node: folders[0].Id}
+	for _, f := range list {
+		if !wanted[f.Name] {
+			continue
+		}
+		if _, dup := b.files[f.Name]; dup {
+			return nil, fmt.Errorf("the backup in Google Drive holds %s twice", f.Name)
+		}
+		res, err := svc.Files.Get(f.Id).Context(ctx).Download()
+		if err != nil {
+			return nil, fmt.Errorf("download %s from Google Drive: %w", f.Name, err)
+		}
+		content, err := io.ReadAll(res.Body)
+		res.Body.Close()
+		if err != nil {
+			return nil, fmt.Errorf("download %s from Google Drive: %w", f.Name, err)
+		}
+		if f.Size > 0 && int64(len(content)) != f.Size {
+			return nil, fmt.Errorf("download %s from Google Drive: got %d of %d bytes", f.Name, len(content), f.Size)
+		}
+		b.files[f.Name] = content
+	}
+	return b, nil
+}
+
+// markRestored records in Drive that this backup was restored elsewhere, as
+// the library does on a restore (backup/drive.go:376-377): a phone that
+// still runs this node stops itself on its next start instead of running
+// the same channels in two places.
+func (b *driveBackup) markRestored(ctx context.Context, instanceID string) error {
+	update := &drive.File{AppProperties: map[string]string{driveBackupIDProp: instanceID}}
+	if _, err := b.svc.Files.Update(b.node, update).Context(ctx).Do(); err != nil {
+		return fmt.Errorf("mark the backup in Google Drive as restored: %w", err)
+	}
+	return nil
+}
+
+func driveList(ctx context.Context, svc *drive.Service, query string, fields string) ([]*drive.File, error) {
+	var out []*drive.File
+	pageToken := ""
+	for {
+		call := svc.Files.List().Spaces("appDataFolder").Context(ctx).
+			Fields("nextPageToken", googleapi.Field(fields)).Q(query).PageSize(1000)
+		if pageToken != "" {
+			call = call.PageToken(pageToken)
+		}
+		r, err := call.Do()
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, r.Files...)
+		if pageToken = r.NextPageToken; pageToken == "" {
+			return out, nil
+		}
+	}
 }

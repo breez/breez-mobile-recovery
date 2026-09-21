@@ -8,11 +8,14 @@ package core
 
 import (
 	"bufio"
+	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"net"
+	"net/http"
 	"os"
 	"path/filepath"
 	"strings"
@@ -22,7 +25,11 @@ import (
 	"github.com/breez/breez/backup"
 	"github.com/breez/breez/bindings"
 	"github.com/breez/breez/data"
+	"github.com/breez/breez/dropwtx"
+	"github.com/btcsuite/btcd/btcutil"
+	"github.com/btcsuite/btcd/txscript"
 	"github.com/btcsuite/btcd/wire"
+	"github.com/lightningnetwork/lnd/lnrpc"
 	"google.golang.org/protobuf/proto"
 )
 
@@ -77,9 +84,15 @@ type Config struct {
 // DefaultConfig returns the production configuration with the work dir
 // under the user's home.
 func DefaultConfig() Config {
-	home, _ := os.UserHomeDir()
+	// Without a home folder the work folder would silently become a
+	// relative one, a different place on every start: leave it empty, which
+	// every operation refuses, unless one is set.
+	workDir := ""
+	if home, err := os.UserHomeDir(); err == nil {
+		workDir = filepath.Join(home, ".breez-recovery")
+	}
 	return Config{
-		WorkDir:            firstNonEmpty(os.Getenv("BREEZ_RECOVERY_WORKDIR"), filepath.Join(home, ".breez-recovery")),
+		WorkDir:            firstNonEmpty(os.Getenv("BREEZ_RECOVERY_WORKDIR"), workDir),
 		Network:            "mainnet",
 		BreezServer:        DefaultBreezServer,
 		BootstrapURL:       DefaultBootstrapURL,
@@ -153,13 +166,26 @@ type Core struct {
 	// checks holds the chain check's verdict on every channel lnd lists
 	// as open. See CheckChannelsOnChain.
 	checks channelChecks
+	// walk is the last walk over the chain, kept so the next one carries
+	// on from the block it ended at.
+	walk *chainWalk
+	// ownScripts are the scripts the wallet's own history check watches,
+	// read before the node's start; nil when they could not be read.
+	ownScripts [][]byte
+	// skippedTo is the block the wallet was set to by the history
+	// shortcut in this start, 0 when it was not used.
+	skippedTo uint32
 }
 
 // New creates a session. It also captures the library's stdout logging into
 // the reporter, once per process.
 func New(cfg Config, rep Reporter) *Core {
 	c := &Core{cfg: cfg, rep: rep}
-	if err := c.loadLayout(); err != nil {
+	if cfg.WorkDir == "" {
+		c.layoutErr = errors.New("no work folder: the home folder could not be found, set one in Advanced settings")
+	} else if err := lockWorkDir(cfg.WorkDir); err != nil {
+		c.layoutErr = err
+	} else if err := c.loadLayout(); err != nil {
 		// Reported by every operation that needs the folder.
 		c.layoutErr = err
 	}
@@ -343,22 +369,34 @@ func (c *Core) GoogleRestore(ctx context.Context, nodeID, mnemonic string, force
 	if err != nil {
 		return err
 	}
-	if err := c.prepareBackupDir(snap.NodeID, force); err != nil {
+	if err := c.checkRestoreTarget(snap.NodeID, force); err != nil {
 		return err
 	}
-	// The library downloads, decrypts and places the files. It is
-	// initialised here, on this backup's own folder, and not before: its
-	// databases are process-wide and stay bound to the first folder.
 	auth, err := c.newGoogleAuth(ctx)
 	if err != nil {
 		return err
 	}
-	if err := c.initLibrary(newServices("gdrive", auth)); err != nil {
+	c.progressf("Downloading backup of node %s (from %s)...", short(snap.NodeID), snap.ModifiedTime.Local().Format("2006-01-02 15:04"))
+	backup, err := downloadDriveBackup(ctx, auth, snap.NodeID)
+	if err != nil {
 		return err
 	}
-	c.progressf("Downloading backup of node %s (from %s)...", short(snap.NodeID), snap.ModifiedTime.Local().Format("2006-01-02 15:04"))
-	if err := bindings.RestoreBackup(snap.NodeID, key); err != nil {
-		return fmt.Errorf("restore failed: %w (wrong backup phrase?)", err)
+	files, err := nodeFilesFrom(backup.files)
+	if err != nil {
+		return err
+	}
+	c.progressf("Decrypting and placing the node files...")
+	decoded, err := decodeBackupFiles(files, key)
+	if err != nil {
+		return err
+	}
+	id, err := c.placeBackup(snap.NodeID, decoded, force)
+	if err != nil {
+		return err
+	}
+	// Last, once the backup is safely in place.
+	if err := backup.markRestored(ctx, id); err != nil {
+		return err
 	}
 	c.progressf("Backup restored into %s.", c.dir())
 	c.restored = true
@@ -393,7 +431,9 @@ func (c *Core) ICloudRestore(ctx context.Context, nodeID, mnemonic string, force
 			return err
 		}
 	}
-	snaps, _, err := c.icloud.snapshots()
+	// Asked again now: the download links of a listing expire, and a newer
+	// backup may have arrived since.
+	snaps, records, err := c.icloud.snapshots()
 	if err != nil {
 		return err
 	}
@@ -405,29 +445,24 @@ func (c *Core) ICloudRestore(ctx context.Context, nodeID, mnemonic string, force
 	if err != nil {
 		return err
 	}
-	if err := c.prepareBackupDir(snap.NodeID, force); err != nil {
+	if err := c.checkRestoreTarget(snap.NodeID, force); err != nil {
 		return err
 	}
 	c.progressf("Downloading backup of node %s (from %s) from iCloud...", short(snap.NodeID), snap.ModifiedTime.Local().Format("2006-01-02 15:04"))
-	paths, err := c.icloud.download(c.dir(), c.records[snap.NodeID])
+	downloaded, err := c.icloud.download(records[snap.NodeID])
 	if err != nil {
 		return err
 	}
-	defer func() {
-		for _, p := range paths {
-			os.Remove(p)
-		}
-	}()
-	if err := c.writeConfigs(); err != nil {
+	files, err := nodeFilesFrom(downloaded)
+	if err != nil {
 		return err
 	}
 	c.progressf("Decrypting and placing the node files...")
-	if len(paths) == 1 {
-		err = c.restoreFromZip(paths[0], key)
-	} else {
-		err = c.restoreFromPaths(paths, key)
-	}
+	decoded, err := decodeBackupFiles(files, key)
 	if err != nil {
+		return err
+	}
+	if _, err := c.placeBackup(snap.NodeID, decoded, force); err != nil {
 		return err
 	}
 	c.progressf("Backup restored into %s.", c.dir())
@@ -457,14 +492,19 @@ func (c *Core) ZipRestore(zipPath, mnemonic string, force bool) error {
 	if err != nil {
 		return err
 	}
-	if err := c.prepareBackupDir(name, force); err != nil {
-		return err
-	}
-	if err := c.writeConfigs(); err != nil {
+	if err := c.checkRestoreTarget(name, force); err != nil {
 		return err
 	}
 	c.progressf("Reading %s...", filepath.Base(zipPath))
-	if err := c.restoreFromZip(zipPath, key); err != nil {
+	files, err := readZip(zipPath)
+	if err != nil {
+		return err
+	}
+	decoded, err := decodeBackupFiles(files, key)
+	if err != nil {
+		return err
+	}
+	if _, err := c.placeBackup(name, decoded, force); err != nil {
 		return err
 	}
 	c.progressf("Backup restored into %s.", c.dir())
@@ -499,6 +539,19 @@ func (c *Core) initLibrary(svc *services) error {
 	if err := bindings.Init(tmp, c.dir(), svc); err != nil {
 		return err
 	}
+	// A bitcoin node the user once set on the phone travels inside
+	// breez.db and REPLACES the peers of breez.conf (chainservice/init.go
+	// reads db.GetPeers with the config's as mere defaults). Such a peer is
+	// often a home node long gone, and the peers this tool pins and tests
+	// would never be used. An empty stored list makes the library fall back
+	// to the configured ones.
+	none, err := proto.Marshal(&data.Peers{})
+	if err != nil {
+		return err
+	}
+	if err := bindings.SetPeers(none); err != nil {
+		return fmt.Errorf("reset the stored bitcoin peers: %w", err)
+	}
 	c.svc = svc
 	c.initialized = true
 	return nil
@@ -507,9 +560,17 @@ func (c *Core) initLibrary(svc *services) error {
 // StartNode starts the embedded lnd on the restored node and returns once
 // its RPC answers. Sync is a separate step, see WaitSynced.
 func (c *Core) StartNode(ctx context.Context) error {
-	if c.node != nil {
-		return nil
+	if c.node == nil {
+		if err := c.startNode(ctx); err != nil {
+			return err
+		}
 	}
+	// Also when the node runs already: a first start whose wait was stopped
+	// or timed out must not carry on as if it were done.
+	return c.firstStart(ctx)
+}
+
+func (c *Core) startNode(ctx context.Context) error {
 	if c.layoutErr != nil {
 		return c.layoutErr
 	}
@@ -524,11 +585,58 @@ func (c *Core) StartNode(ctx context.Context) error {
 	if svc == nil {
 		svc = newServices("", nil)
 	}
+	// A fresh history check was ordered (the search found funds on
+	// addresses the wallet did not have): drop the wallet's history now,
+	// before the library opens anything. Done here and not through the
+	// library's FORCE_RESCAN file: its Init only logs a failed drop, removes
+	// the file when an unrelated second drop succeeded, and also throws away
+	// lnd's scan positions, which costs lnd another pass over the chain. The
+	// order stands until the drop has succeeded.
+	// Carried out first: should it fail, it orders the full check below.
+	c.carryOutKnownHistory()
+	if c.marked(historyRecheckFile) {
+		if err := c.writeConfigs(); err != nil {
+			return err
+		}
+		if err := dropwtx.Drop(c.dir()); err != nil {
+			return fmt.Errorf("prepare the fresh history check: %w", err)
+		}
+		if err := os.Remove(filepath.Join(c.dir(), historyRecheckFile)); err != nil {
+			return err
+		}
+		c.progressf("The history is checked again from the start, with the addresses found.")
+	}
 	if err := c.initLibrary(svc); err != nil {
 		return err
 	}
 	if err := c.checkPeers(ctx); err != nil {
 		return err
+	}
+	// The wallet's creation time is where the search for later funds
+	// starts; the file can only be read while lnd does not hold it.
+	if !c.searchDone() {
+		if _, err := c.walletBirthdayTime(); err != nil {
+			birthday, err := walletBirthday(c.walletDBPath())
+			if err != nil {
+				return err
+			}
+			if err := writeFileAtomic(filepath.Join(c.dir(), walletBirthdayFile), []byte(birthday.UTC().Format(time.RFC3339)+"\n")); err != nil {
+				return err
+			}
+		}
+	}
+	if !c.searchDone() {
+		// For the history shortcut (syncskip.go). Not being able to read
+		// them only means the shortcut is not taken.
+		scripts, err := walletScripts(c.walletDBPath(), c.cfg.Network)
+		if err != nil {
+			nodeLog("[addresses] the wallet's addresses were not read: " + err.Error())
+		} else {
+			c.ownScripts = scripts
+			if scripts == nil {
+				c.ownScripts = [][]byte{}
+			}
+		}
 	}
 	c.progressf("Starting the node...")
 	nodeCfg := c.cfg
@@ -537,48 +645,77 @@ func (c *Core) StartNode(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
+	n.wroteSyncState = c.skippedTo > 0
 	c.node = n
 	c.progressf("Node is up.")
+	return nil
+}
 
-	// First start after a restore: derive the address look-ahead, then
-	// make the wallet check its history again from the start so the new
-	// addresses are covered. Marked so it happens once per restore.
-	marker := filepath.Join(c.dir(), addressesExtendedFile)
-	if _, err := os.Stat(marker); err == nil {
+// firstStart handles the first start after a restore. lnd must not start
+// far behind the chain tip. Started at the bootstrap checkpoint (seen:
+// block 812,000 of 967,857) its chain notifier walks every block up to the
+// tip downloading full blocks, 4 a second, and only acts on a channel close
+// once it gets there: about 10 hours, with the closed channel's funds
+// invisible meanwhile. Started at the tip there is nothing to walk and old
+// closes are found through the filter scan. The headers take about a
+// minute; the next start is the one that counts, so wait for them here and
+// start again.
+func (c *Core) firstStart(ctx context.Context) error {
+	if c.searchDone() || c.marked(chainReadyFile) {
 		return nil
 	}
-	// lnd must not start far behind the chain tip. Started at the bootstrap
-	// checkpoint (seen: block 812,000 of 967,857) its chain notifier walks
-	// every block up to the tip downloading full blocks, 4 a second, and
-	// only acts on a channel close once it gets there: about 10 hours, with
-	// the closed channel's funds invisible meanwhile. Started at the tip
-	// there is nothing to walk and old closes are found through the filter
-	// scan. The headers take about a minute; the next start is the one that
-	// counts, so wait for them here.
 	c.progressf("Catching up with the bitcoin chain...")
 	if err := waitHeadersSynced(ctx, 15*time.Minute); err != nil {
 		return err
 	}
-	c.progressf("Preparing addresses to check, so funds received after the last backup are found too...")
-	if err := n.extendAddresses(ctx, c.progressf); err != nil {
-		return err
-	}
-	if err := os.WriteFile(marker, []byte(time.Now().Format(time.RFC3339)+"\n"), 0600); err != nil {
-		return err
-	}
-	if err := os.WriteFile(filepath.Join(c.dir(), forceRescanFile), nil, 0600); err != nil {
+	if err := c.mark(chainReadyFile); err != nil {
 		return err
 	}
 	// The library cannot be re-initialised in-process after a stop (it
 	// hangs), so the caller restarts the whole program. Stop can hang too
 	// on some nodes after lnd itself is down, so give it a bounded wait;
 	// the program exit releases whatever is left.
-	c.progressf("Stopping the node; the app restarts to check the history with the new addresses...")
+	c.progressf("Caught up. Stopping the node; the app restarts to continue...")
 	if !c.StopWithin(20 * time.Second) {
 		c.progressf("The node did not stop cleanly; the program exits and starts again.")
 	}
 	return ErrRestartRequired
 }
+
+func (c *Core) marked(name string) bool {
+	_, err := os.Stat(filepath.Join(c.dir(), name))
+	return err == nil
+}
+
+func (c *Core) mark(name string) error {
+	return writeFileAtomic(filepath.Join(c.dir(), name), []byte(time.Now().Format(time.RFC3339)+"\n"))
+}
+
+// writeFileAtomic writes a small state file so that a crash or power loss
+// leaves either the old content or the new, never an empty file.
+func writeFileAtomic(path string, content []byte) error {
+	tmp := path + ".tmp"
+	f, err := os.OpenFile(tmp, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0600)
+	if err != nil {
+		return err
+	}
+	if _, err := f.Write(content); err != nil {
+		f.Close()
+		return err
+	}
+	if err := f.Sync(); err != nil {
+		f.Close()
+		return err
+	}
+	if err := f.Close(); err != nil {
+		return err
+	}
+	return os.Rename(tmp, path)
+}
+
+// searchDone reports whether the search for funds paid after the backup
+// was done on this folder (or the look-ahead of releases up to alpha.30).
+func (c *Core) searchDone() bool { return c.marked(addressesExtendedFile) }
 
 // StopWithin calls Stop and reports whether it finished within d.
 func (c *Core) StopWithin(d time.Duration) bool {
@@ -595,18 +732,29 @@ func (c *Core) StopWithin(d time.Duration) bool {
 	}
 }
 
-// ErrRestartRequired is returned by StartNode when the program must be
-// started again for the node to pick up a change (the address look-ahead
-// after a restore).
+// ErrRestartRequired is returned by StartNode and WaitSynced when the
+// program must be started again for the node to pick up a change (a
+// restore, the first catch-up with the chain, addresses found paid after
+// the backup).
 var ErrRestartRequired = errors.New("restart required")
 
 const (
-	// addressesExtendedFile marks a work dir whose wallet had the address
-	// look-ahead derived.
+	// addressesExtendedFile marks a folder whose search for funds paid after
+	// the backup is done (see addrscan.go). The name dates from the
+	// look-ahead of releases up to alpha.30, whose folders carry it too.
 	addressesExtendedFile = "addresses-extended"
+	// chainReadyFile marks a folder whose first start caught up with the
+	// chain, so lnd starts at the tip from now on.
+	chainReadyFile = "chain-ready"
 	// forceRescanFile is the marker the breez library checks on Init: it
 	// drops the wallet's transaction store and rescans from the birthday.
+	// This tool no longer writes it (see historyRecheckFile); it is still
+	// handy for testing and may be present in folders of older releases.
 	forceRescanFile = "FORCE_RESCAN"
+	// historyRecheckFile orders a fresh history check: StartNode drops the
+	// wallet's transaction store before the library starts, and removes
+	// the file once that succeeded.
+	historyRecheckFile = "history-recheck"
 )
 
 // SyncProgress is reported while the node catches up with the chain.
@@ -627,16 +775,54 @@ type SyncProgress struct {
 }
 
 // WaitSynced blocks until lnd reports synced_to_chain, calling onProgress
-// on every change.
+// on every change. On the first sync after a restore it also searches for
+// funds paid after the backup, as soon as the chain is caught up and while
+// lnd checks the history: finding them first saves checking the history
+// twice. It returns ErrRestartRequired when the search found some.
 func (c *Core) WaitSynced(ctx context.Context, onProgress func(SyncProgress)) error {
 	if c.node == nil {
 		return errors.New("node not started")
 	}
-	return c.node.waitSynced(ctx, func(p SyncProgress) {
+	report := func(p SyncProgress) {
 		if onProgress != nil {
 			onProgress(p)
 		}
-	})
+	}
+	if !c.searchDone() {
+		headers, cancel := context.WithCancel(ctx)
+		err := c.node.waitSynced(headers, func(p SyncProgress) {
+			if p.Stage == "rescan" || p.Synced() {
+				cancel()
+				return
+			}
+			report(p)
+		})
+		cancel()
+		if err != nil && (ctx.Err() != nil || !errors.Is(err, context.Canceled)) {
+			return err
+		}
+		if err := c.findLaterFunds(ctx, report); err != nil {
+			return err
+		}
+	}
+	if err := c.node.waitSynced(ctx, report); err != nil {
+		if errors.Is(err, errWalletSync) {
+			// Whatever left the wallet in that state (the history shortcut
+			// is the one thing here that writes it): dropping the history
+			// resets the sync state to the birthday block, the long and
+			// known way.
+			c.progressf("The app cannot continue from its sync position; its history is checked from the start.")
+			if err := c.mark(historyRecheckFile); err != nil {
+				return err
+			}
+			if !c.StopWithin(20 * time.Second) {
+				c.progressf("The node did not stop cleanly; the program exits and starts again.")
+			}
+			return ErrRestartRequired
+		}
+		return err
+	}
+	return c.verifyFound(ctx)
 }
 
 // Channel is an open channel of the restored node.
@@ -677,6 +863,12 @@ type Status struct {
 	Pending       []PendingClose `json:"pending"`
 	InChannels    int64          `json:"inChannels"`
 	InPending     int64          `json:"inPending"`
+	// Unresolved counts channels closed on chain that lnd has not taken up
+	// yet and whose payout the app cannot tell: the recovery is not done.
+	Unresolved int `json:"unresolved"`
+	// Outgoing counts transactions sent from here that wait for their
+	// confirmation.
+	Outgoing int `json:"outgoing"`
 	// Warnings lists parts of the status that could not be read.
 	Warnings []string `json:"warnings"`
 }
@@ -706,9 +898,32 @@ func (c *Core) Status(ctx context.Context) (*Status, error) {
 	return st, nil
 }
 
-// ValidateAddress checks a bitcoin address for the configured network.
-func ValidateAddress(address string) error {
-	return bindings.ValidateAddress(address)
+// ValidateAddress checks a bitcoin address for the configured network. It
+// does not need the node or the library (the library's own check
+// dereferences an app object that only exists after Init).
+func (c *Core) ValidateAddress(address string) error {
+	_, err := c.payScript(address)
+	return err
+}
+
+// payScript validates the address and returns the script paying it.
+func (c *Core) payScript(address string) ([]byte, error) {
+	params, err := netParams(c.cfg.Network)
+	if err != nil {
+		return nil, err
+	}
+	addr, err := btcutil.DecodeAddress(address, params)
+	if err != nil {
+		return nil, err
+	}
+	if !addr.IsForNet(params) {
+		return nil, fmt.Errorf("%s is not a %s address", address, c.cfg.Network)
+	}
+	// A bare public key is not an address anybody meant to pay.
+	if _, ok := addr.(*btcutil.AddressPubKey); ok {
+		return nil, errors.New("cannot send to a bare public key")
+	}
+	return txscript.PayToAddrScript(addr)
 }
 
 // SweepOption is one fee choice for the sweep transaction.
@@ -720,9 +935,13 @@ type SweepOption struct {
 
 // SweepPlan is a prepared sweep of the whole on-chain balance.
 type SweepPlan struct {
-	Address string        `json:"address"`
+	Address string `json:"address"`
+	// Amount is the confirmed balance the transactions spend.
 	Amount  int64         `json:"amount"`
 	Options []SweepOption `json:"options"`
+	// Kept is what the node holds back as change instead of sending it (a
+	// reserve lnd keeps for public anchor channels); 0 in the normal case.
+	Kept int64 `json:"kept"`
 }
 
 type sweepPlan struct {
@@ -730,13 +949,22 @@ type sweepPlan struct {
 	txs map[int][]byte
 }
 
+// sweepTargets are the fee choices offered, in blocks.
+var sweepTargets = []int{2, 6, 25}
+
 // PrepareSweep builds the sweep transactions for the confirmed on-chain
 // balance at the three fee targets, without broadcasting.
+//
+// It asks lnd for each target itself. The library's helper gives up on the
+// first target that fails, and with a small balance the fast target often
+// fails alone (its fee leaves less than the dust limit) while a slower one
+// works.
 func (c *Core) PrepareSweep(ctx context.Context, address string) (*SweepPlan, error) {
 	if c.node == nil {
 		return nil, errors.New("node not started")
 	}
-	if err := bindings.ValidateAddress(address); err != nil {
+	script, err := c.payScript(address)
+	if err != nil {
 		return nil, fmt.Errorf("invalid address: %w", err)
 	}
 	wb, err := c.node.walletBalance(ctx)
@@ -749,29 +977,80 @@ func (c *Core) PrepareSweep(ctx context.Context, address string) (*SweepPlan, er
 		}
 		return nil, errors.New("no confirmed on-chain balance to sweep")
 	}
-	res, err := bindings.SweepAllCoinsTransactions(address)
-	if err != nil {
-		return nil, fmt.Errorf("prepare sweep: %w", err)
-	}
-	var txs data.SweepAllCoinsTransactions
-	if err := proto.Unmarshal(res, &txs); err != nil {
+	// lnd falls back to its minimum fee rate without a word when its fee
+	// source does not answer; a "fast" choice would then be the slowest.
+	if err := checkFeeSource(ctx, c.cfg.FeeURL); err != nil {
 		return nil, err
 	}
-	plan := &sweepPlan{SweepPlan: SweepPlan{Address: address, Amount: txs.Amt}, txs: map[int][]byte{}}
-	for _, target := range []int{2, 6, 25} {
-		tx, ok := txs.Transactions[int32(target)]
-		if !ok {
+	plan := &sweepPlan{SweepPlan: SweepPlan{Address: address, Amount: wb.ConfirmedBalance}, txs: map[int][]byte{}}
+	var failures []string
+	for _, target := range sweepTargets {
+		res, err := c.node.client.SendCoins(ctx, &lnrpc.SendCoinsRequest{
+			Addr: address, SendAll: true, TargetConf: int32(target), DryRun: true,
+		})
+		if err != nil {
+			failures = append(failures, fmt.Sprintf("%d blocks: %v", target, err))
 			continue
 		}
-		plan.Options = append(plan.Options, SweepOption{ConfTarget: target, Fee: tx.Fees, TxID: tx.TxHash})
-		plan.txs[target] = tx.Tx
+		var tx wire.MsgTx
+		if err := tx.Deserialize(bytes.NewReader(res.Tx)); err != nil {
+			return nil, fmt.Errorf("read the prepared transaction: %w", err)
+		}
+		var sent, kept int64
+		for _, out := range tx.TxOut {
+			if bytes.Equal(out.PkScript, script) {
+				sent += out.Value
+			} else {
+				kept += out.Value
+			}
+		}
+		if sent == 0 {
+			return nil, errors.New("the prepared transaction does not pay the address")
+		}
+		plan.Kept = kept
+		plan.Options = append(plan.Options, SweepOption{ConfTarget: target, Fee: wb.ConfirmedBalance - sent - kept, TxID: tx.TxHash().String()})
+		plan.txs[target] = res.Tx
 	}
 	if len(plan.Options) == 0 {
-		return nil, errors.New("no sweep transaction could be prepared")
+		return nil, fmt.Errorf("no transaction could be prepared (%s)", strings.Join(failures, "; "))
+	}
+	for _, f := range failures {
+		c.progressf("No transaction at the fee for %s.", f)
+	}
+	if plan.Kept > 0 {
+		c.progressf("The node keeps %d sat back as a reserve for its channels.", plan.Kept)
 	}
 	c.sweep = plan
 	c.progressf("Prepared sweep of %d sat to %s.", plan.Amount, address)
 	return &plan.SweepPlan, nil
+}
+
+// checkFeeSource makes sure the fee source lnd uses answers with rates.
+func checkFeeSource(ctx context.Context, url string) error {
+	if url == "" {
+		return nil
+	}
+	ctx, cancel := context.WithTimeout(ctx, 20*time.Second)
+	defer cancel()
+	req, err := http.NewRequestWithContext(ctx, "GET", url, nil)
+	if err != nil {
+		return err
+	}
+	res, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return fmt.Errorf("the current fee rates could not be fetched; check the connection and try again (%w)", err)
+	}
+	defer res.Body.Close()
+	var rates struct {
+		FeeByBlockTarget map[string]uint32 `json:"fee_by_block_target"`
+	}
+	if res.StatusCode != 200 {
+		return fmt.Errorf("the current fee rates could not be fetched (HTTP %d); try again later", res.StatusCode)
+	}
+	if err := json.NewDecoder(io.LimitReader(res.Body, 1<<20)).Decode(&rates); err != nil || len(rates.FeeByBlockTarget) == 0 {
+		return errors.New("the fee source answered without rates; try again later")
+	}
+	return nil
 }
 
 // BroadcastSweep publishes the prepared sweep transaction for the given

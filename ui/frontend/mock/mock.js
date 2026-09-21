@@ -16,7 +16,7 @@
   ];
   const nodeId = snaps[0].nodeId;
   const statuses = {
-    channels: { nodeId, blockHeight: 967302, synced: true, peers: 8, onchainConfirmed: 0, onchainUnconfirmed: 0, inChannels: 1583210, inPending: 0, pending: [],
+    channels: { nodeId, blockHeight: 967302, synced: true, peers: 8, onchainConfirmed: 0, onchainUnconfirmed: 0, inChannels: 1583210, inPending: 0, unresolved: 0, outgoing: 0, pending: [],
       channels: [
         { channelPoint: "7f3a1c9e2b8d4f6a0c5e3b1d9f7a2c4e6b8d0f1a3c5e7b9d2f4a6c8e0b1d3f5a7c:1", localBalance: 1250000, remoteBalance: 750000, capacity: 2000000, active: true },
         { channelPoint: "a1b2c3d4e5f60718293a4b5c6d7e8f90a1b2c3d4e5f60718293a4b5c6d7e8f90:0", localBalance: 333210, remoteBalance: 66790, capacity: 400000, active: false },
@@ -55,7 +55,15 @@
     StartAndSync: async () => {
       progress("Starting the node..."); await sleep(800); progress("Node is up.");
       const steps = [["connecting", 0, 0, 0, "Connecting to the bitcoin network..."], ["headers", 589000, 967310, 3, ""], ["headers", 700000, 967310, 6, ""], ["headers", 850000, 967310, 8, ""], ["headers", 940000, 967310, 8, ""], ["rescan", 557139, 967310, 8, "Checking every block since block 557139 for your channel and payment history (938 addresses). The bar starts moving with the first transaction found.", -1, 0, 0], ["rescan", 612400, 967310, 8, "Checked at least through block 612400 of 967310. The bar moves each time a transaction is found.", 13.5, 7, 1583000000], ["synced", 967310, 967310, 8, "Synced to the chain at block 967310"]];
+      let searched = false;
       for (const [stage, height, target, peers, msg, pct, found, through] of steps) {
+        if (stage === "rescan" && !searched) {
+          searched = true;
+          for (const h of [758000, 860000, 967000]) {
+            emit("sync", { stage: "addresses", height: h, target: 967310, peers: 8, percent: (h - 758000) / (967310 - 758000) * 100, message: "Looking for funds received after the last backup", found: 0, throughTime: 0, remaining: h === 758000 ? -1 : Math.round((967310 - h) / 550) });
+            await sleep(slow === "addresses" && h === 860000 ? 600000 : 600);
+          }
+        }
         emit("sync", { stage, height, target, peers, percent: pct !== undefined ? pct : (stage === "synced" ? 100 : Math.min(99, height / target * 100)), message: msg || ("Catching up with the bitcoin chain, block " + height + " of about " + target), found: found || 0, throughTime: through || 0 });
         await sleep(slow === "sync" && height === 700000 ? 600000 : slow === "rescan1" && height === 557139 ? 600000 : slow === "rescan2" && height === 612400 ? 600000 : 600);
       }
