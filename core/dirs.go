@@ -14,7 +14,9 @@ import (
 	"strings"
 	"time"
 
+	"github.com/breez/breez/data"
 	bolt "go.etcd.io/bbolt"
+	"google.golang.org/protobuf/proto"
 )
 
 // Layout of the work folder. Every restored backup lives in a folder of its
@@ -53,6 +55,10 @@ var ErrLibraryBound = errors.New("the app has to restart before it can work on a
 // process, "" before that. Package level like the library's own state: a
 // second Core in the same process is bound just the same.
 var boundLibDir string
+
+// boundPayments is the length of the payment list of boundLibDir, counted
+// before the library opened it (RestoredBackups cannot read it after).
+var boundPayments int
 
 // hasNode reports whether the folder holds a restored app: all three node
 // files. A wallet without its channel database is not one (lnd would start
@@ -140,8 +146,14 @@ func (c *Core) RestoredBackups() []RestoredBackup {
 			rb := RestoredBackup{Name: e.Name(), Dir: dir, Current: dir == c.nodeDir, NodeID: e.Name()}
 			if strings.HasPrefix(e.Name(), "zip-") {
 				rb.NodeID = ""
-				if data, err := os.ReadFile(filepath.Join(dir, nodeIDFile)); err == nil {
-					rb.NodeID = strings.TrimSpace(string(data))
+				if raw, err := os.ReadFile(filepath.Join(dir, nodeIDFile)); err == nil {
+					rb.NodeID = strings.TrimSpace(string(raw))
+				} else if dir != boundLibDir {
+					// Restored before the id was kept, or unreadable then.
+					if id, err := nodeIDOf(dir, c.cfg.Network); err == nil {
+						rb.NodeID = id
+						_ = writeFileAtomic(filepath.Join(dir, nodeIDFile), []byte(id+"\n"))
+					}
 				}
 			}
 			if fi, err := os.Stat(lndLogPath(dir, c.cfg.Network)); err == nil {
@@ -149,15 +161,16 @@ func (c *Core) RestoredBackups() []RestoredBackup {
 				rb.LastOpened = &t
 			}
 			// Read from breez.db directly, so it is there before the node
-			// ever ran; not from the folder the library has open here.
-			if dir != boundLibDir {
-				if n, err := countPayments(filepath.Join(dir, "breez.db")); err == nil {
-					rb.Payments = n
-				}
+			// ever ran; the folder the library has open here was counted
+			// just before it was opened.
+			if dir == boundLibDir {
+				rb.Payments = boundPayments
+			} else if n, err := countPayments(filepath.Join(dir, "breez.db")); err == nil {
+				rb.Payments = n
 			}
-			if data, err := os.ReadFile(filepath.Join(dir, lastFundsFile)); err == nil {
+			if raw, err := os.ReadFile(filepath.Join(dir, lastFundsFile)); err == nil {
 				var f LastFunds
-				if json.Unmarshal(data, &f) == nil {
+				if json.Unmarshal(raw, &f) == nil {
 					rb.Funds = &f
 				}
 			}
@@ -172,42 +185,58 @@ func (c *Core) RestoredBackups() []RestoredBackup {
 // folder is named after the file (the id is only readable once decrypted).
 const nodeIDFile = "node-id"
 
-// readNodeID reads the node's own public key from its channel.db, where
-// lnd keeps it as the graph's source node (lnd channeldb/graph.go:
-// nodeBucket "graph-node", sourceKey "source").
-func readNodeID(channelDB string) (string, error) {
-	db, err := bolt.Open(channelDB, 0600, &bolt.Options{ReadOnly: true, Timeout: time.Second})
-	if err != nil {
-		return "", err
-	}
-	defer db.Close()
+// nodeIDOf reads a restored node's public key without starting it. First
+// from the app's account in breez.db, where the account service keeps
+// lnd's identity key (breez/breez account/account.go) and which a backup
+// carries whole; else from channel.db's graph source node, which lnd
+// writes when it starts (a backup's channel.db leaves the graph out,
+// lnd breezbackup/backup.go).
+func nodeIDOf(dir, network string) (string, error) {
 	var id string
-	err = db.View(func(tx *bolt.Tx) error {
+	err := viewBolt(filepath.Join(dir, "breez.db"), func(tx *bolt.Tx) error {
+		b := tx.Bucket([]byte("account"))
+		if b == nil {
+			return errors.New("no account bucket")
+		}
+		var acc data.Account
+		if err := proto.Unmarshal(b.Get([]byte("account")), &acc); err != nil {
+			return err
+		}
+		id = acc.Id
+		return nil
+	})
+	if err == nil && isNodeID(id) {
+		return id, nil
+	}
+	err = viewBolt(filepath.Join(dir, nodeFileTargets(network)["channel.db"], "channel.db"), func(tx *bolt.Tx) error {
 		nodes := tx.Bucket([]byte("graph-node"))
 		if nodes == nil {
 			return errors.New("no graph-node bucket")
 		}
-		pub := nodes.Get([]byte("source"))
-		if len(pub) != 33 {
-			return fmt.Errorf("source node key of %d bytes", len(pub))
-		}
-		id = hex.EncodeToString(pub)
+		id = hex.EncodeToString(nodes.Get([]byte("source")))
 		return nil
 	})
-	return id, err
+	if err != nil {
+		return "", err
+	}
+	if !isNodeID(id) {
+		return "", errors.New("no node id in breez.db or channel.db")
+	}
+	return id, nil
+}
+
+// isNodeID reports whether s is a compressed public key in hex.
+func isNodeID(s string) bool {
+	b, err := hex.DecodeString(s)
+	return err == nil && len(b) == 33 && (b[0] == 2 || b[0] == 3)
 }
 
 // countPayments counts the app's payment list in its breez.db: the
 // entries of the "payments" bucket (breez/breez db/db.go, read the same way
 // as FetchAllAccountPayments), nested buckets left out.
 func countPayments(breezDB string) (int, error) {
-	db, err := bolt.Open(breezDB, 0600, &bolt.Options{ReadOnly: true, Timeout: time.Second})
-	if err != nil {
-		return 0, err
-	}
-	defer db.Close()
 	n := 0
-	err = db.View(func(tx *bolt.Tx) error {
+	err := viewBolt(breezDB, func(tx *bolt.Tx) error {
 		b := tx.Bucket([]byte("payments"))
 		if b == nil {
 			return nil

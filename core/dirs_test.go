@@ -9,7 +9,9 @@ import (
 	"testing"
 	"time"
 
+	"github.com/breez/breez/data"
 	bolt "go.etcd.io/bbolt"
+	"google.golang.org/protobuf/proto"
 )
 
 type nopReporter struct{}
@@ -199,57 +201,73 @@ func TestRestoredBackupsLastFunds(t *testing.T) {
 	}
 }
 
-// A backup restored from a file is listed with its node id, read from the
-// graph's source node in its channel.db, like a cloud backup is by name.
+// A backup restored from a file is listed with its node id, read the way
+// a backup carries it: from the app's account in breez.db (a backup's
+// channel.db has no graph source node), else from channel.db's source node
+// once lnd wrote it. A damaged file costs the id, never the program.
 func TestRestoredBackupsNodeID(t *testing.T) {
 	root := t.TempDir()
 	c := testCore(t, root)
-	if err := place(t, c, nodeA, "A", false); err != nil {
-		t.Fatal(err)
-	}
-	zipName := "zip-4c1d9a7e22b0f513"
-	if err := place(t, c, zipName, "Z", false); err != nil {
-		t.Fatal(err)
-	}
-	// channel.db of the zip restore, with lnd's source node key.
-	pub, _ := hex.DecodeString(nodeB)
-	chanDB := filepath.Join(c.backupDir(zipName), nodeFileTargets("mainnet")["channel.db"], "channel.db")
-	db, err := bolt.Open(chanDB, 0600, nil)
-	if err != nil {
-		t.Fatal(err)
-	}
-	err = db.Update(func(tx *bolt.Tx) error {
-		b, err := tx.CreateBucketIfNotExists([]byte("graph-node"))
-		if err != nil {
-			return err
+	const fromAccount, fromGraph, none = "zip-00000000000000a1", "zip-00000000000000a2", "zip-00000000000000a3"
+	for _, name := range []string{nodeA, fromAccount, fromGraph, none} {
+		if err := place(t, c, name, name[:4], false); err != nil {
+			t.Fatal(err)
 		}
-		return b.Put([]byte("source"), pub)
-	})
-	db.Close()
-	if err != nil {
-		t.Fatal(err)
 	}
-	id, err := readNodeID(chanDB)
-	if err != nil || id != nodeB {
-		t.Fatalf("readNodeID: %q, %v", id, err)
+	put := func(path, bucket, key string, val []byte) {
+		t.Helper()
+		db, err := bolt.Open(path, 0600, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer db.Close()
+		if err := db.Update(func(tx *bolt.Tx) error {
+			b, err := tx.CreateBucketIfNotExists([]byte(bucket))
+			if err != nil {
+				return err
+			}
+			return b.Put([]byte(key), val)
+		}); err != nil {
+			t.Fatal(err)
+		}
 	}
-	if err := os.WriteFile(filepath.Join(c.backupDir(zipName), nodeIDFile), []byte(id+"\n"), 0600); err != nil {
-		t.Fatal(err)
+	chanDB := func(name string) string {
+		return filepath.Join(c.backupDir(name), nodeFileTargets("mainnet")["channel.db"], "channel.db")
 	}
-	got := map[string]string{}
+	// As a backup has them: the id in the account, the graph without "source".
+	acc, _ := proto.Marshal(&data.Account{Id: nodeB})
+	put(filepath.Join(c.backupDir(fromAccount), "breez.db"), "account", "account", acc)
+	put(chanDB(fromAccount), "graph-node", "02aaaa", []byte("a channel peer"))
+	// No account, but lnd ran and wrote its source node.
+	pubA, _ := hex.DecodeString(nodeA)
+	put(chanDB(fromGraph), "graph-node", "source", pubA)
+	// Neither, and a breez.db cut short: no id, no count, no crash.
+	breezNone := filepath.Join(c.backupDir(none), "breez.db")
+	if info, err := os.Stat(breezNone); err != nil || os.Truncate(breezNone, info.Size()/2) != nil {
+		t.Fatal("could not cut breez.db short")
+	}
+
+	got := map[string]RestoredBackup{}
 	for _, b := range c.RestoredBackups() {
-		got[b.Name] = b.NodeID
+		got[b.Name] = b
 	}
-	if got[nodeA] != nodeA || got[zipName] != nodeB {
-		t.Errorf("node ids %v", got)
+	want := map[string]string{nodeA: nodeA, fromAccount: nodeB, fromGraph: nodeA, none: ""}
+	for name, id := range want {
+		if got[name].NodeID != id {
+			t.Errorf("%s: node id %q, want %q", name, got[name].NodeID, id)
+		}
 	}
-	// A channel.db without the key is an error, not a wrong id.
-	if _, err := readNodeID(filepath.Join(c.backupDir(nodeA), nodeFileTargets("mainnet")["channel.db"], "channel.db")); err == nil {
-		t.Error("read a node id from a channel.db without one")
+	if got[none].Payments != 0 {
+		t.Errorf("payments of a damaged breez.db: %d", got[none].Payments)
+	}
+	// The ids read are kept, so the next listing does not open the files.
+	for _, name := range []string{fromAccount, fromGraph} {
+		if raw, err := os.ReadFile(filepath.Join(c.backupDir(name), nodeIDFile)); err != nil || strings.TrimSpace(string(raw)) != want[name] {
+			t.Errorf("%s: kept id %q, %v", name, raw, err)
+		}
 	}
 }
 
-// The list tells a used app from an empty one by the app's own payment
 // list in breez.db, read without the library.
 func TestRestoredBackupsPayments(t *testing.T) {
 	root := t.TempDir()

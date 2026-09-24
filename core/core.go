@@ -505,7 +505,7 @@ func (c *Core) ZipRestore(zipPath, mnemonic string, force bool) error {
 	}
 	// The folder is named after the file; the list of restored backups
 	// shows the node id, which only the decrypted files hold.
-	if id, err := readNodeID(filepath.Join(c.dir(), nodeFileTargets(c.cfg.Network)["channel.db"], "channel.db")); err == nil {
+	if id, err := nodeIDOf(c.dir(), c.cfg.Network); err == nil {
 		_ = writeFileAtomic(filepath.Join(c.dir(), nodeIDFile), []byte(id+"\n"))
 	}
 	c.progressf("Backup restored into %s.", c.dir())
@@ -535,6 +535,7 @@ func (c *Core) initLibrary(svc *services) error {
 	}
 	// Bound from here on, even when Init fails half way: the library may
 	// already hold this folder's databases.
+	boundPayments, _ = countPayments(filepath.Join(c.dir(), "breez.db"))
 	boundLibDir = c.dir()
 	if err := bindings.Init(tmp, c.dir(), svc); err != nil {
 		return err

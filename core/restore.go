@@ -273,6 +273,57 @@ func checkDatabases(dir, network string) error {
 // down (seen in this package's tests), in this tool and in lnd alike. A
 // fault in the walk itself is turned into an error for the same reason.
 func checkBolt(path string) (err error) {
+	if err := boltWhole(path); err != nil {
+		return err
+	}
+	defer debug.SetPanicOnFault(debug.SetPanicOnFault(true))
+	defer func() {
+		if r := recover(); r != nil {
+			err = fmt.Errorf("unreadable: %v", r)
+		}
+	}()
+	db, err := bolt.Open(path, 0600, &bolt.Options{ReadOnly: true, Timeout: 5 * time.Second})
+	if err != nil {
+		return err
+	}
+	defer db.Close()
+	return db.View(func(tx *bolt.Tx) error {
+		// Read to the end: the walk runs in a goroutine of its own that
+		// blocks on a reader who left.
+		var first error
+		for e := range tx.Check() {
+			if first == nil {
+				first = e
+			}
+		}
+		return first
+	})
+}
+
+// viewBolt reads a bbolt file that may be damaged, read-only and without
+// taking the program down: the size check and the fault guard of
+// checkBolt, without its full walk.
+func viewBolt(path string, fn func(*bolt.Tx) error) (err error) {
+	if err := boltWhole(path); err != nil {
+		return err
+	}
+	defer debug.SetPanicOnFault(debug.SetPanicOnFault(true))
+	defer func() {
+		if r := recover(); r != nil {
+			err = fmt.Errorf("unreadable: %v", r)
+		}
+	}()
+	db, err := bolt.Open(path, 0600, &bolt.Options{ReadOnly: true, Timeout: time.Second})
+	if err != nil {
+		return err
+	}
+	defer db.Close()
+	return db.View(fn)
+}
+
+// boltWhole checks that a bbolt file holds every page its meta pages say
+// it has, before it is mapped into memory.
+func boltWhole(path string) error {
 	f, err := os.Open(path)
 	if err != nil {
 		return err
@@ -306,29 +357,7 @@ func checkBolt(path string) (err error) {
 	if pages > uint64(info.Size()/pageSize) {
 		return fmt.Errorf("the file has %d of its %d pages: it was cut short", info.Size()/pageSize, pages)
 	}
-
-	defer debug.SetPanicOnFault(debug.SetPanicOnFault(true))
-	defer func() {
-		if r := recover(); r != nil {
-			err = fmt.Errorf("unreadable: %v", r)
-		}
-	}()
-	db, err := bolt.Open(path, 0600, &bolt.Options{ReadOnly: true, Timeout: 5 * time.Second})
-	if err != nil {
-		return err
-	}
-	defer db.Close()
-	return db.View(func(tx *bolt.Tx) error {
-		// Read to the end: the walk runs in a goroutine of its own that
-		// blocks on a reader who left.
-		var first error
-		for e := range tx.Check() {
-			if first == nil {
-				first = e
-			}
-		}
-		return first
-	})
+	return nil
 }
 
 // nodeFilesFrom turns what a cloud holds for a backup, either a backup.zip
