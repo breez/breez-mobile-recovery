@@ -84,7 +84,11 @@ jobs:
         run: |
           ls -la
           if [[ "${{ runner.os }}" == "macOS" ]]; then
-            ditto -c -k --keepParent "breez-recovery.app" "../../../${{ matrix.artifact }}.zip"
+            # The Dock, Finder and app switcher show the bundle's folder name.
+            # Wails names it after the project name, which the Windows
+            # manifest also uses and where a space is not allowed.
+            mv breez-recovery.app "Breez Recovery.app"
+            ditto -c -k --keepParent "Breez Recovery.app" "../../../${{ matrix.artifact }}.zip"
             zip -j "../../../${{ matrix.artifact }}-cli.zip" recovery-cli
           elif [[ "${{ runner.os }}" == "Windows" ]]; then
             7z a "../../../${{ matrix.artifact }}.zip" breez-recovery.exe recovery-cli.exe
