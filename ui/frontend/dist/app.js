@@ -365,12 +365,22 @@
     return (h ? h + ":" + String(m % 60).padStart(2, "0") : String(m)) + ":" + String(s % 60).padStart(2, "0");
   }
   function remainingText(sec) {
-    if (sec == null || sec < 0) return "estimating";
     if (sec < 60) return "<1 min";
     const m = Math.round(sec / 60);
     if (m < 60) return "~" + m + " min";
     const h = Math.floor(m / 60), r = m % 60;
     return "~" + h + " h" + (r ? " " + r + " min" : "");
+  }
+  // "estimating" with dots that come and go, left running across the
+  // updates (twice a second) so the animation does not restart.
+  function showRemaining(sec) {
+    const box = $("#live-remaining");
+    if (sec != null && sec >= 0) { box.textContent = remainingText(sec); return; }
+    if (box.querySelector(".dots")) return;
+    box.textContent = "estimating";
+    const dots = el("span", "dots");
+    for (let i = 0; i < 3; i++) dots.appendChild(el("i", null, "."));
+    box.appendChild(dots);
   }
   setInterval(() => {
     if (ui.screen !== "sync") return;
@@ -409,7 +419,7 @@
     $$("#sync-live .rescan-only").forEach((d) => d.classList.toggle("hidden", !rescan));
     if (live) {
       $("#live-elapsed").textContent = elapsed();
-      $("#live-remaining").textContent = remainingText(p.remaining);
+      showRemaining(p.remaining);
     }
     if (rescan) {
       $("#sync-blocks").textContent = unknown ? "" : "about block " + p.height.toLocaleString("en-US") + " of " + p.target.toLocaleString("en-US");
