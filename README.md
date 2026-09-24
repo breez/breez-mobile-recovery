@@ -98,7 +98,7 @@ Steps: 1 sign in and list, 2 restore, 3 sync and see the right funds,
 | Backup source | Linux | macOS | Windows |
 |---|---|---|---|
 | Google Drive | steps 1 to 4, 2026-09-17 (sent 15,370 sat); closed channel's 999 sat collected, 2026-09-20 | not run | not run |
-| iCloud | not run | not run | not run |
+| iCloud | not run | steps 1 and 2, 2026-09-24 | not run |
 | Backup file | steps 2 and 3, 2026-09-20 | not run | not run |
 
 ## Working on it
