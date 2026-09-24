@@ -108,7 +108,7 @@ p { margin: 0 0 16px; }
 .btn-sm { padding: 6px 12px; font-size: 13px; }
 .btn-lg { padding: 13px 26px; font-size: 16px; }
 .actions { display: flex; gap: 10px; margin-top: 24px; justify-content: flex-end; flex-wrap: wrap; }
-.actions .btn-ghost { margin-right: auto; }
+.actions .btn-ghost, .actions .btn-secondary { margin-right: auto; }
 
 /* steps */
 .steps { margin: 0 0 20px; padding-left: 22px; }
