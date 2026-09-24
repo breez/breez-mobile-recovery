@@ -10,6 +10,7 @@ import (
 	"runtime"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/breez/breez-mobile-recovery/core"
@@ -32,6 +33,13 @@ type App struct {
 
 	emitMu sync.Mutex
 	emitFn func(name string, data ...interface{}) // set once the window runs
+	// ask shows a question and quit ends the program: the window's, or a
+	// test's.
+	ask  func(wruntime.MessageDialogOptions) (string, error)
+	quit func()
+	// closing is closeStopping while a close waits for the node to stop,
+	// then closeQuitting.
+	closing atomic.Int32
 
 	opMu     sync.Mutex // one long operation at a time
 	cancelMu sync.Mutex
@@ -51,8 +59,9 @@ type App struct {
 
 	nodeMu sync.Mutex
 	node   *nodeProc // the running helper, nil when none
-	// syncFailed: the last sync ended with an error, and the node may be
-	// half started; the next sync starts a new helper. Only with opMu held.
+	// syncFailed: the last sync ended with an error, or was stopped before
+	// the node was up, and the node may be half started; the next sync
+	// starts a new helper. Only with opMu held.
 	syncFailed bool
 	// newHelper makes the command of a helper; tests run a fake one.
 	newHelper            func(name string, cfg core.Config) (*exec.Cmd, error)
@@ -71,6 +80,8 @@ func newApp() *App {
 	a := &App{cfg: core.DefaultConfig(), log: newLogBuffer(20000),
 		newHelper: helperCommand, stopWait: helperStopTimeout, cancelWait: helperCancelTimeout,
 		syncQuiet: syncQuietTime}
+	a.ask = func(o wruntime.MessageDialogOptions) (string, error) { return wruntime.MessageDialog(a.ctx, o) }
+	a.quit = func() { wruntime.Quit(a.ctx) }
 	a.core = core.New(a.cfg, &reporter{app: a})
 	a.logDir = a.core.NodeDir()
 	return a
@@ -107,37 +118,65 @@ func (a *App) logHeader() {
 	a.log.tool("Work dir: " + a.c().Config().WorkDir)
 }
 
+const (
+	closeStopping = 1 // a close waits for the node to stop
+	closeQuitting = 2 // it has stopped: the close goes through
+)
+
+// beforeClose decides whether the window may close now (false). While
+// something runs it asks first and keeps the window until the node has
+// stopped, then quits. It returns at once: on Windows it runs on the
+// window's thread, which would freeze, and the page could not show the
+// node stopping.
 func (a *App) beforeClose(ctx context.Context) bool {
-	busy := !a.opMu.TryLock()
-	if !busy {
-		a.opMu.Unlock()
+	switch a.closing.Load() {
+	case closeQuitting:
+		return false
+	case closeStopping:
+		return true // a second click while the node stops
 	}
-	// Closing mid-way stops the node. Ask first while something runs, so
-	// a stray click on the window controls does not end a long sync.
-	if busy || a.runningHelper() != nil {
-		answer, err := wruntime.MessageDialog(ctx, wruntime.MessageDialogOptions{
-			Type:          wruntime.QuestionDialog,
-			Title:         "Close Breez Recovery?",
-			Message:       "The app is still working. Closing stops the node; you can reopen the app later and it continues where it left off.\n\nClose it anyway?",
-			Buttons:       []string{"No", "Yes"},
-			DefaultButton: "No",
-			CancelButton:  "No",
-		})
-		// Linux maps a question dialog to its own Yes/No buttons whatever
-		// labels are passed, so accept either spelling of a confirmation.
-		if err != nil || (answer != "Yes" && answer != "Close" && answer != "Ok") {
-			return true
+	if a.opMu.TryLock() {
+		idle := a.runningHelper() == nil
+		if idle {
+			// The log stays with the backup.
+			a.logFor("")
+		}
+		a.opMu.Unlock()
+		if idle {
+			return false
 		}
 	}
-	a.cancelCurrent()
-	// The call that ran returns first: a broadcast is never cut short, and
-	// a cancelled call ends within helperCancelTimeout.
-	a.opMu.Lock()
-	defer a.opMu.Unlock()
-	a.stopHelper(true)
-	// The log stays with the backup.
-	a.logFor("")
-	return false
+	// Closing mid-way stops the node. Ask first, so a stray click on the
+	// window controls does not end a long sync.
+	answer, err := a.ask(wruntime.MessageDialogOptions{
+		Type:          wruntime.QuestionDialog,
+		Title:         "Close Breez Recovery?",
+		Message:       "The app is still working. Closing stops the node; you can reopen the app later and it continues where it left off.\n\nClose it anyway?",
+		Buttons:       []string{"No", "Yes"},
+		DefaultButton: "No",
+		CancelButton:  "No",
+	})
+	// Linux maps a question dialog to its own Yes/No buttons whatever
+	// labels are passed, so accept either spelling of a confirmation.
+	if err != nil || (answer != "Yes" && answer != "Close" && answer != "Ok") {
+		return true
+	}
+	if !a.closing.CompareAndSwap(0, closeStopping) {
+		return true
+	}
+	go func() {
+		a.cancelCurrent()
+		// The call that ran returns first: a broadcast is never cut short,
+		// and a cancelled call ends within helperCancelTimeout.
+		a.opMu.Lock()
+		a.stopHelper(true)
+		// The log stays with the backup.
+		a.logFor("")
+		a.closing.Store(closeQuitting)
+		a.opMu.Unlock()
+		a.quit()
+	}()
+	return true
 }
 
 // ---- reporter --------------------------------------------------------------
@@ -379,6 +418,9 @@ func (a *App) ApplySettings(s Settings) (State, error) {
 	}
 	a.stopHelper(true)
 	a.coreMu.Lock()
+	// The old work folder is free for another program; New locks the new
+	// one, or the same one again.
+	core.ReleaseLocks(a.cfg.WorkDir)
 	a.cfg.WorkDir = strings.TrimSpace(s.WorkDir)
 	a.cfg.Peers = strings.TrimSpace(s.Peers)
 	a.core = core.New(a.cfg, &reporter{app: a})
@@ -505,7 +547,7 @@ func (a *App) restore(ctx context.Context, c *core.Core, name string, req Restor
 	if c.IsRestored(name) && !req.Force {
 		// Linux shows its own Yes/No buttons whatever labels are
 		// passed, so the question is a yes/no one.
-		answer, err := wruntime.MessageDialog(a.ctx, wruntime.MessageDialogOptions{
+		answer, err := a.ask(wruntime.MessageDialogOptions{
 			Type:          wruntime.QuestionDialog,
 			Title:         "Already restored",
 			Message:       "Already restored here. Continue with it?\n\nNo restores it again.",
@@ -541,7 +583,7 @@ func (a *App) restore(ctx context.Context, c *core.Core, name string, req Restor
 // runs; confirm first.
 func (a *App) RestoreOther(ask bool) error {
 	if ask {
-		answer, err := wruntime.MessageDialog(a.ctx, wruntime.MessageDialogOptions{
+		answer, err := a.ask(wruntime.MessageDialogOptions{
 			Type:          wruntime.QuestionDialog,
 			Title:         "Restore another backup?",
 			Message:       "Funds of this app are still on their way and move only while it runs. Restore this backup again later to finish.\n\nRestore another backup now?",
@@ -595,17 +637,18 @@ func (a *App) StartAndSync() (*core.Status, error) {
 	var st *core.Status
 	err := a.run("start node and sync", func(ctx context.Context) error {
 		a.logFor(a.c().NodeDir())
-		var err error
-		st, err = a.syncOnHelper(ctx)
-		// A failed start can leave the node half started, and its library
-		// starts only once per process.
-		a.syncFailed = err != nil && !errors.Is(err, context.Canceled)
+		m, err := a.syncOnHelper(ctx)
+		st = m.Status
+		// A failed or stopped start can leave the node half started, and
+		// its library starts only once per process: the next sync gets a
+		// new helper. One stopped after the node was up goes on in it.
+		a.syncFailed = err != nil && !(errors.Is(err, context.Canceled) && m.NodeUp)
 		return err
 	})
 	return st, err
 }
 
-func (a *App) syncOnHelper(ctx context.Context) (*core.Status, error) {
+func (a *App) syncOnHelper(ctx context.Context) (helperMessage, error) {
 	a.syncMu.Lock()
 	a.syncing = true
 	a.syncMu.Unlock()
@@ -622,22 +665,26 @@ func (a *App) syncOnHelper(ctx context.Context) (*core.Status, error) {
 			p = nil
 		}
 		if p == nil {
+			// Stop may have been pressed while the old helper stopped.
+			if err := ctx.Err(); err != nil {
+				return helperMessage{}, err
+			}
 			var err error
 			if p, err = a.startHelper(); err != nil {
-				return nil, err
+				return helperMessage{}, err
 			}
 		}
 		m, err := p.call(ctx, helperRequest{Call: callStartAndSync}, a.cancelWait, a.log.tool)
 		if !errors.Is(err, core.ErrRestartRequired) {
-			return m.Status, err
+			return m, err
 		}
 		// Core has stopped the node, and the helper exits by itself.
 		p.await(a.stopWait, a.log.tool)
 		if restarts == maxNodeRestarts {
-			return nil, fmt.Errorf("the node asked to start again %d times in a row; Save log has the details", maxNodeRestarts+1)
+			return helperMessage{}, fmt.Errorf("the node asked to start again %d times in a row; Save log has the details", maxNodeRestarts+1)
 		}
 		if err := ctx.Err(); err != nil {
-			return nil, err
+			return helperMessage{}, err
 		}
 		a.log.tool("The node starts again.")
 		a.syncStep("Starting the node again...")

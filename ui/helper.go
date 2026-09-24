@@ -65,12 +65,12 @@ type nodeCore interface {
 
 // syncNode starts the node, waits for the chain sync and the channel check,
 // and returns the funds. logf gets the sync lines worth a log line, onSync
-// every sync report.
-func syncNode(ctx context.Context, c nodeCore, logf func(string), onSync func(core.SyncProgress)) (*core.Status, error) {
+// every sync report. up says the node's start had completed.
+func syncNode(ctx context.Context, c nodeCore, logf func(string), onSync func(core.SyncProgress)) (st *core.Status, up bool, err error) {
 	if err := c.StartNode(ctx); err != nil {
-		return nil, err
+		return nil, false, err
 	}
-	err := c.WaitSynced(ctx, func(p core.SyncProgress) {
+	err = c.WaitSynced(ctx, func(p core.SyncProgress) {
 		// The search for later funds reports twice a second with the
 		// same words; its log lines come from core.
 		if p.Stage != "addresses" {
@@ -79,15 +79,16 @@ func syncNode(ctx context.Context, c nodeCore, logf func(string), onSync func(co
 		onSync(p)
 	})
 	if err != nil {
-		return nil, err
+		return nil, true, err
 	}
 	// Before anything is shown as spendable, make sure the chain agrees
 	// that the channels are open. A backup taken before a channel closed
 	// still lists it.
 	if _, err := c.CheckChannelsOnChain(ctx, onSync); err != nil {
-		return nil, err
+		return nil, true, err
 	}
-	return c.Status(ctx)
+	st, err = c.Status(ctx)
+	return st, true, err
 }
 
 // runHelper is the program in helper mode. The helper's exit ends it.
@@ -336,10 +337,10 @@ func (h *helper) run(ctx context.Context, req helperRequest) (*helperMessage, er
 	c := h.core
 	switch req.Call {
 	case callStartAndSync:
-		st, err := syncNode(ctx, c,
+		st, up, err := syncNode(ctx, c,
 			func(msg string) { h.addLog(toolLine(msg)) },
 			func(p core.SyncProgress) { h.send(&helperMessage{Event: eventSync, Sync: &p}) })
-		return &helperMessage{Status: st}, err
+		return &helperMessage{Status: st, NodeUp: up}, err
 	case callStatus:
 		st, err := c.Status(ctx)
 		return &helperMessage{Status: st}, err

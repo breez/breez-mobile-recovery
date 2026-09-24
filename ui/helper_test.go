@@ -35,9 +35,21 @@ func TestMain(m *testing.M) {
 // newFakeNode is the node of a fake helper process in mode: "sync" works,
 // "restart" asks for a restart on every start, "crash" panics while it
 // syncs, "crashidle" panics just after a sync, "hang" never returns from
-// its stop, "stuck" ignores a cancel while it syncs.
+// its stop, "stuck" ignores a cancel while it syncs, "startcancel" waits in
+// its first start until cancelled and cannot start again in the process,
+// "waitcancel" waits in its first sync until cancelled, "failstart" fails
+// its start and takes 1.5 s to stop, "slowstop" takes 500 ms to stop.
 func newFakeNode(rep core.Reporter, mode string) *fakeNode {
 	f := &fakeNode{rep: rep, restart: mode == "restart", name: os.Getenv(helperEnv)}
+	// Its calls run one at a time.
+	calls := 0
+	untilCancelledOnce := func(ctx context.Context) error {
+		if calls++; calls > 1 {
+			return nil
+		}
+		<-ctx.Done()
+		return ctx.Err()
+	}
 	switch mode {
 	case "crash":
 		f.wait = func(context.Context) error { panic("fake crash") }
@@ -47,6 +59,22 @@ func newFakeNode(rep core.Reporter, mode string) *fakeNode {
 		f.stopHook = func() { select {} }
 	case "stuck":
 		f.wait = func(context.Context) error { select {} }
+	case "startcancel":
+		// As if the library's app had started and lnd's RPC was awaited:
+		// the app starts only once per process (breez app.go Start).
+		f.start = func(ctx context.Context) error {
+			if calls > 0 {
+				return errors.New("start node: Breez already started")
+			}
+			return untilCancelledOnce(ctx)
+		}
+	case "waitcancel":
+		f.wait = untilCancelledOnce
+	case "failstart":
+		f.start = func(context.Context) error { return errors.New("start failed") }
+		f.stopHook = func() { time.Sleep(1500 * time.Millisecond) }
+	case "slowstop":
+		f.stopHook = func() { time.Sleep(500 * time.Millisecond) }
 	}
 	return f
 }
@@ -58,6 +86,7 @@ type fakeNode struct {
 	restart bool   // StartNode asks for a restart
 	name    string // the backup it runs, logged on start
 
+	start       func(ctx context.Context) error // inside StartNode
 	wait        func(ctx context.Context) error // inside WaitSynced
 	broadcast   func()                          // inside BroadcastSweep
 	stopHook    func()                          // inside StopWithin
@@ -84,6 +113,11 @@ func (f *fakeNode) StartNode(ctx context.Context) error {
 	f.rep.Progress("Starting the node...")
 	if f.name != "" {
 		f.rep.NodeLog("fake node on " + f.name)
+	}
+	if f.start != nil {
+		if err := f.start(ctx); err != nil {
+			return err
+		}
 	}
 	f.rep.NodeLog("lnd: node up")
 	if f.restart {
@@ -327,7 +361,7 @@ func TestHelperCancel(t *testing.T) {
 	}
 	r.send(helperRequest{Call: callCancel})
 	m, _, _ := r.reply(id)
-	if !m.Canceled || !strings.Contains(m.Error, "canceled") {
+	if !m.Canceled || !strings.Contains(m.Error, "canceled") || !m.NodeUp {
 		t.Fatalf("reply %+v", m)
 	}
 	if m, _, _ := r.reply(r.call(callStatus)); m.Error != "" || m.Status == nil {

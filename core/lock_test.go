@@ -1,6 +1,7 @@
 package core
 
 import (
+	"context"
 	"errors"
 	"os"
 	"path/filepath"
@@ -24,12 +25,16 @@ func (r *progressRecorder) Progress(msg string) {
 	r.mu.Unlock()
 }
 
-// helperCore is a session as the node helper makes it.
-func helperCore(root string, rep Reporter) *Core {
+// helperCore is a session as the node helper makes it. The lock of the
+// backup it picks is released at the test's end.
+func helperCore(t *testing.T, root string, rep Reporter) *Core {
+	t.Helper()
 	cfg := DefaultConfig()
 	cfg.WorkDir = root
 	cfg.SkipLock = true
-	return New(cfg, rep)
+	c := New(cfg, rep)
+	t.Cleanup(func() { ReleaseLocks(c.dir()) })
+	return c
 }
 
 // placeAB restores backups A and B, in that order: B is in use.
@@ -64,7 +69,7 @@ func TestHelperSessionLeavesTheWorkFolderToTheWindow(t *testing.T) {
 	// An older release's node in the work folder is the window's to move.
 	fakeNode(t, root, "legacy")
 
-	h := helperCore(root, nopReporter{})
+	h := helperCore(t, root, nopReporter{})
 	if h.layoutErr != nil || h.dir() != "" {
 		t.Fatalf("helper session: dir %q, err %v", h.dir(), h.layoutErr)
 	}
@@ -84,7 +89,7 @@ func TestHelperSessionLeavesTheWorkFolderToTheWindow(t *testing.T) {
 		t.Fatal("the helper moved the old layout")
 	}
 	other := t.TempDir()
-	helperCore(other, nopReporter{})
+	helperCore(t, other, nopReporter{})
 	if _, err := os.Stat(filepath.Join(other, lockFileName)); err == nil {
 		t.Fatal("the helper locked the work folder")
 	}
@@ -123,7 +128,7 @@ func TestBackupHeldByAnotherProcess(t *testing.T) {
 	}
 
 	rep := &progressRecorder{}
-	h := helperCore(root, rep)
+	h := helperCore(t, root, rep)
 	go func() {
 		time.Sleep(300 * time.Millisecond)
 		held.Close()
@@ -139,11 +144,7 @@ func TestBackupHeldByAnotherProcess(t *testing.T) {
 	}
 
 	// Free again once the helper is gone.
-	locksMu.Lock()
-	abs, _ := filepath.Abs(w.backupDir(nodeA))
-	locks[abs].Close()
-	delete(locks, abs)
-	locksMu.Unlock()
+	ReleaseLocks(w.backupDir(nodeA))
 	if err := w.UseBackup(nodeA); err != nil {
 		t.Fatalf("select after the helper exited: %v", err)
 	}
@@ -179,4 +180,49 @@ func TestSetInUse(t *testing.T) {
 	if err := c.UseBackup(nodeA); err != nil {
 		t.Fatal(err)
 	}
+}
+
+// The command line starts a node only under its backup's lock, taken before
+// anything is written into the folder: after a window crashed, the node of
+// its helper may still be stopping there. Its pending history orders stay.
+func TestCLINodeWaitsForTheBackupsLock(t *testing.T) {
+	root := t.TempDir()
+	rep := &progressRecorder{}
+	c := testCoreWith(t, root, rep)
+	placeAB(t, c)
+	if err := c.mark(historyRecheckFile); err != nil {
+		t.Fatal(err)
+	}
+	held := holdElsewhere(t, c.dir())
+	defer held.Close()
+	wait := backupLockWait
+	backupLockWait = 300 * time.Millisecond
+	defer func() { backupLockWait = wait }()
+
+	if err := c.StartNode(context.Background()); !errors.Is(err, ErrBackupInUse) {
+		t.Fatalf("start on a held backup: %v", err)
+	}
+	if !c.marked(historyRecheckFile) {
+		t.Error("the history order was carried out under another node")
+	}
+	rep.mu.Lock()
+	said := strings.Join(rep.lines, "|")
+	rep.mu.Unlock()
+	if !strings.Contains(said, "Waiting for the node") {
+		t.Errorf("the wait was not reported: %q", said)
+	}
+}
+
+// A released work folder is free for another program, and the tests
+// release theirs before the folder is removed.
+func TestReleaseLocks(t *testing.T) {
+	root := t.TempDir()
+	testCore(t, root)
+	ReleaseLocks(filepath.Join(root, "."))
+	db, err := bolt.Open(filepath.Join(root, lockFileName), 0600, &bolt.Options{Timeout: 300 * time.Millisecond})
+	if err != nil {
+		t.Fatalf("the released folder is still locked: %v", err)
+	}
+	db.Close()
+	ReleaseLocks(root, "")
 }

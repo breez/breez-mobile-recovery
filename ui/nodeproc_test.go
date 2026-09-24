@@ -8,10 +8,13 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/breez/breez-mobile-recovery/core"
+	wruntime "github.com/wailsapp/wails/v2/pkg/runtime"
+	bolt "go.etcd.io/bbolt"
 )
 
 // The window's side, with the test binary as its node helpers (TestMain).
@@ -42,6 +45,11 @@ func newWindow(t *testing.T, workDir string, modes ...string) *window {
 		stopWait: 10 * time.Second, cancelWait: 10 * time.Second}
 	a.emitFn = w.record
 	a.log.emit = w.record
+	a.ask = func(o wruntime.MessageDialogOptions) (string, error) {
+		t.Errorf("unexpected question %q", o.Title)
+		return "No", nil
+	}
+	a.quit = func() { t.Error("unexpected quit") }
 	a.core = core.New(cfg, &reporter{app: a})
 	a.logDir = a.core.NodeDir()
 	a.newHelper = func(name string, cfg core.Config) (*exec.Cmd, error) {
@@ -58,6 +66,8 @@ func newWindow(t *testing.T, workDir string, modes ...string) *window {
 		a.opMu.Lock()
 		a.stopHelper(false)
 		a.opMu.Unlock()
+		// Windows does not delete an open file.
+		core.ReleaseLocks(a.c().Config().WorkDir)
 	})
 	return w
 }
@@ -96,6 +106,43 @@ func (w *window) named(name string) []event {
 		}
 	}
 	return out
+}
+
+// waitForSync waits until a sync event with the message msg was sent.
+func (w *window) waitForSync(msg string) {
+	w.t.Helper()
+	deadline := time.Now().Add(10 * time.Second)
+	for time.Now().Before(deadline) {
+		for _, p := range w.syncs() {
+			if p.Message == msg {
+				return
+			}
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	w.t.Fatalf("no sync event %q", msg)
+}
+
+// syncInBackground runs StartAndSync; the result arrives on the channel.
+func (w *window) syncInBackground() <-chan error {
+	done := make(chan error, 1)
+	go func() {
+		_, err := w.a.StartAndSync()
+		done <- err
+	}()
+	return done
+}
+
+// result waits for the outcome of syncInBackground.
+func (w *window) result(done <-chan error) error {
+	w.t.Helper()
+	select {
+	case err := <-done:
+		return err
+	case <-time.After(10 * time.Second):
+		w.t.Fatal("the sync did not return")
+		return nil
+	}
 }
 
 // waitFor waits until an event called name was sent.
@@ -340,7 +387,8 @@ func TestNodeHelperStopKills(t *testing.T) {
 	if p.cmd.ProcessState == nil || p.cmd.ProcessState.Success() {
 		t.Errorf("helper state %v", p.cmd.ProcessState)
 	}
-	inOrder(t, w.log(), "Stopping the node...", "The node did not stop within 300ms; its process is ended.", "The node has stopped (signal: killed).")
+	// The kill reads "signal: killed" on Unix, "exit status 1" on Windows.
+	inOrder(t, w.log(), "Stopping the node...", "The node did not stop within 300ms; its process is ended.", "The node has stopped (")
 	if e := w.named("nodestopped"); len(e) != 0 {
 		t.Errorf("a kill the window did sent %v", e)
 	}
@@ -355,23 +403,11 @@ func TestNodeHelperCancelKills(t *testing.T) {
 	restored(t, root, "backup-aaaa", true)
 	w := newWindow(t, root, "stuck")
 	w.a.cancelWait = 300 * time.Millisecond
-	done := make(chan error, 1)
-	go func() {
-		_, err := w.a.StartAndSync()
-		done <- err
-	}()
-	w.waitFor("sync")
-	for len(w.named("sync")) < 3 { // the reports before the stuck wait
-		time.Sleep(20 * time.Millisecond)
-	}
+	done := w.syncInBackground()
+	w.waitForSync("Looking for funds") // the last report before the stuck wait
 	w.a.Cancel()
-	select {
-	case err := <-done:
-		if err == nil || err.Error() != "cancelled" {
-			t.Errorf("sync: %v", err)
-		}
-	case <-time.After(10 * time.Second):
-		t.Fatal("the cancelled sync did not return")
+	if err := w.result(done); err == nil || err.Error() != "cancelled" {
+		t.Errorf("sync: %v", err)
 	}
 	inOrder(t, w.log(), "cancel requested", "did not stop the call within 300ms", "The node has stopped")
 	if w.a.runningHelper() != nil {
@@ -419,6 +455,13 @@ func TestLogPerBackup(t *testing.T) {
 	if _, err := w.a.ApplySettings(Settings{WorkDir: t.TempDir()}); err != nil {
 		t.Fatalf("settings after a node ran: %v", err)
 	}
+	// The old work folder is free for another program.
+	db, err := bolt.Open(filepath.Join(root, "instance.lock"), 0600, &bolt.Options{Timeout: 300 * time.Millisecond})
+	if err != nil {
+		t.Errorf("the old work folder is still locked: %v", err)
+	} else {
+		db.Close()
+	}
 	if w.a.runningHelper() != nil || w.a.c().LibraryBound() {
 		t.Error("the node still runs after the settings changed")
 	}
@@ -439,4 +482,158 @@ func readLog(t *testing.T, dir string) []string {
 		t.Fatal(err)
 	}
 	return strings.Split(string(data), "\n")
+}
+
+// Stop during the node's start, then Continue: the library's app starts
+// only once per process, so the sync goes on in a new helper.
+func TestNodeHelperStopDuringStart(t *testing.T) {
+	root := t.TempDir()
+	restored(t, root, "backup-aaaa", true)
+	w := newWindow(t, root, "startcancel", "sync")
+	done := w.syncInBackground()
+	w.waitForSync("Starting the node...")
+	w.a.Cancel()
+	if err := w.result(done); err == nil || err.Error() != "cancelled" {
+		t.Fatalf("sync: %v", err)
+	}
+	if st, err := w.a.StartAndSync(); err != nil || st == nil {
+		t.Fatalf("Continue after a stop during the start: %+v, %v", st, err)
+	}
+	if n := len(w.started()); n != 2 {
+		t.Errorf("%d helpers started, want 2", n)
+	}
+}
+
+// Stop once the node is up, then Continue: the node is kept.
+func TestNodeHelperStopDuringSyncKeepsTheNode(t *testing.T) {
+	root := t.TempDir()
+	restored(t, root, "backup-aaaa", true)
+	w := newWindow(t, root, "waitcancel")
+	done := w.syncInBackground()
+	w.waitForSync("Looking for funds")
+	w.a.Cancel()
+	if err := w.result(done); err == nil || err.Error() != "cancelled" {
+		t.Fatalf("sync: %v", err)
+	}
+	if st, err := w.a.StartAndSync(); err != nil || st == nil {
+		t.Fatalf("Continue: %+v, %v", st, err)
+	}
+	if n := len(w.started()); n != 1 {
+		t.Errorf("%d helpers started, want 1", n)
+	}
+}
+
+// Stop pressed while the node of a failed sync stops: no new node starts,
+// and the page is told the sync was stopped, not that a peer failed.
+func TestNodeHelperStopWhileTheOldNodeStops(t *testing.T) {
+	root := t.TempDir()
+	restored(t, root, "backup-aaaa", true)
+	w := newWindow(t, root, "failstart", "sync")
+	if _, err := w.a.StartAndSync(); err == nil || err.Error() != "start failed" {
+		t.Fatalf("first sync: %v", err)
+	}
+	done := w.syncInBackground()
+	w.waitForSync("Stopping the node to start it again...")
+	w.a.Cancel()
+	if err := w.result(done); err == nil || err.Error() != "cancelled" {
+		t.Fatalf("sync: %v", err)
+	}
+	if n := len(w.started()); n != 1 {
+		t.Errorf("%d helpers started after the stop, want 1", n)
+	}
+	if st, err := w.a.StartAndSync(); err != nil || st == nil {
+		t.Fatalf("Continue: %+v, %v", st, err)
+	}
+}
+
+// A call whose Stop was pressed already is not sent.
+func TestNodeCallAfterStop(t *testing.T) {
+	root := t.TempDir()
+	restored(t, root, "backup-aaaa", true)
+	w := newWindow(t, root, "sync")
+	w.a.opMu.Lock()
+	p, err := w.a.startHelper()
+	w.a.opMu.Unlock()
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	if _, err := p.call(ctx, helperRequest{Call: callStartAndSync}, time.Second, w.a.log.tool); !errors.Is(err, context.Canceled) {
+		t.Errorf("call after the stop: %v", err)
+	}
+	p.mu.Lock()
+	sent := p.lastID
+	p.mu.Unlock()
+	if sent != 0 {
+		t.Error("the call was sent")
+	}
+}
+
+// Closing while the node runs asks first, and the window stays while the
+// node stops, so the page can show it: on Windows this runs on the
+// window's thread. A second click meanwhile does nothing. The log goes to
+// the backup before the program quits.
+func TestCloseStopsTheNodeFirst(t *testing.T) {
+	root := t.TempDir()
+	dir := restored(t, root, "backup-aaaa", true)
+	w := newWindow(t, root, "slowstop")
+	if _, err := w.a.StartAndSync(); err != nil {
+		t.Fatal(err)
+	}
+	var asked atomic.Int32
+	w.a.ask = func(wruntime.MessageDialogOptions) (string, error) {
+		asked.Add(1)
+		return "Yes", nil
+	}
+	// The window closes when the quit's own check lets it.
+	quit := make(chan bool, 1)
+	w.a.quit = func() { quit <- w.a.beforeClose(context.Background()) }
+	start := time.Now()
+	if !w.a.beforeClose(context.Background()) {
+		t.Fatal("the window closed with the node running")
+	}
+	if took := time.Since(start); took > 300*time.Millisecond {
+		t.Errorf("the close waited %v", took)
+	}
+	if !w.a.beforeClose(context.Background()) {
+		t.Error("a second click closed the window while the node stopped")
+	}
+	select {
+	case kept := <-quit:
+		if kept {
+			t.Error("the quit after the stop was held back")
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("no quit")
+	}
+	if n := asked.Load(); n != 1 {
+		t.Errorf("asked %d times", n)
+	}
+	if w.a.runningHelper() != nil {
+		t.Error("the node still runs")
+	}
+	inOrder(t, readLog(t, dir), "fake node on backup-aaaa", "The node has stopped.")
+	var names []string
+	for _, e := range w.seen() {
+		if e.name == "stopping" || e.name == "logreset" {
+			names = append(names, e.name)
+		}
+	}
+	if strings.Join(names, ",") != "stopping,logreset" {
+		t.Errorf("events %q", names)
+	}
+}
+
+// With nothing running the window closes at once, without a question, and
+// the log goes to the backup.
+func TestCloseWhenIdle(t *testing.T) {
+	root := t.TempDir()
+	dir := restored(t, root, "backup-aaaa", true)
+	w := newWindow(t, root, "sync")
+	w.a.logHeader()
+	if w.a.beforeClose(context.Background()) {
+		t.Fatal("the window was kept")
+	}
+	inOrder(t, readLog(t, dir), "Work dir:")
 }

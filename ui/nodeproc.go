@@ -171,6 +171,10 @@ func (p *nodeProc) exitError() error {
 // cancelled, and a helper that has not answered cancelWait later is
 // killed, unless the call is a broadcast. logf notes that kill.
 func (p *nodeProc) call(ctx context.Context, req helperRequest, cancelWait time.Duration, logf func(string)) (helperMessage, error) {
+	// Stop was pressed already: the call is not sent at all.
+	if err := ctx.Err(); err != nil {
+		return helperMessage{}, err
+	}
 	ch := make(chan helperMessage, 1)
 	p.mu.Lock()
 	if p.exited {

@@ -26,6 +26,7 @@
     logCount: 0,
     logOpen: false,
     busy: false,
+    leaving: false,       // Restore another backup is stopping the node
     useName: "",          // restored backup picked on the start screen
     currentName: "",      // restored backup in use
     restored: new Set(),  // names (node ids) of the backups restored here
@@ -217,6 +218,7 @@
 
   async function listFrom(source) {
     ui.source = source;
+    ui.zip = null; // a backup file picked before is not this restore's
     const google = source === "google";
     $("#signin-title").textContent = google ? "Sign in to Google" : "Sign in with your Apple ID";
     $("#signin-text").textContent = google
@@ -381,7 +383,8 @@
       setBusy(false);
       if (isCancel(e)) { await refreshState(); show("welcome"); return; }
       const msg = errMsg(e);
-      if (ui.selected && ui.selected.encrypted || (ui.zip && ui.zip.needsPhrase)) {
+      const encrypted = ui.source === "zip" ? !!(ui.zip && ui.zip.needsPhrase) : !!(ui.selected && ui.selected.encrypted);
+      if (encrypted) {
         show("phrase");
         $("#phrase-count").textContent = msg;
         $("#phrase-count").className = "hint err";
@@ -817,19 +820,22 @@
     // The funds screen, after the node stopped by itself: the same backup.
     "restart-node": () => { if (!ui.busy) startSync(); },
     "restore-other": async () => {
-      if (ui.busy) return;
+      // A second click while the node stops. A status refresh or a history
+      // load that runs is waited out by the Go side.
+      if (ui.leaving) return;
       // Each backup has a folder of its own, so nothing is overwritten. A
       // running node stops first.
       ui.force = false;
       // Money still on its way moves only while this node runs: ask first.
       const ask = !ui.nodeStopped && (ui.screen === "done" || (ui.screen === "wallet" && isMoving(ui.status)));
+      ui.leaving = true;
       setBusy(true);
       try {
         await api.RestoreOther(ask);
       } catch (e) {
         if (isCancel(e)) return; // answered No
         throw e;
-      } finally { setBusy(false); }
+      } finally { ui.leaving = false; setBusy(false); }
       show("source");
     },
     "back-welcome": async () => { await refreshState(); show("welcome"); },

@@ -49,7 +49,9 @@ the ones on a real node or wallet skip unless their `BREEZ_LIVE_*`
 variables are set. CI runs vet and the tests on all three platforms
 before it builds, then `TestBuiltHelper` on the built app (starts it in
 helper mode, pings it, closes its stdin); locally it runs with
-`BREEZ_RECOVERY_SMOKE_EXE=<built executable>`.
+`BREEZ_RECOVERY_SMOKE_EXE=<built executable>`. A test that makes a
+session releases its folder locks (`core.ReleaseLocks`) before its temp
+folder is removed: Windows does not delete an open file.
 `go vet -tags walletrpc,chainrpc ./core . && go vet -tags webkit2_41,walletrpc,chainrpc ./ui` before
 committing. The `walletrpc` tag compiles lnd's WalletKit RPC in; without
 it the search for funds paid after the backup fails with an unimplemented RPC.
@@ -389,9 +391,10 @@ Every value is rendered with textContent; keep it that way.
   returned (breez.db opens with no timeout), and the window marks its
   folder in use (`SetInUse`) until then, which keeps the in-process
   guards working. The helper locks `backups/<name>/instance.lock`
-  (`LockBackup`, up to 20 s), and the window checks that lock before it
-  moves or selects a folder (`ErrBackupInUse`): a helper of a crashed
-  window lives up to 25 s.
+  (`LockBackup`, up to 20 s), the CLI takes the same lock before its
+  node starts, and the window checks that lock before it moves or
+  selects a folder (`ErrBackupInUse`): a helper of a crashed window
+  lives up to 25 s.
   Stop: a stop frame and stdin closed; the helper cancels, gives the call
   3 s (a broadcast until the end), runs StopWithin(20 s) and exits; the
   window kills it after 25 s, and after 30 s of an ignored cancel (never
@@ -403,16 +406,21 @@ Every value is rendered with textContent; keep it that way.
   helper's exit ends the rest.
   A crash never starts the node again: a waiting call fails with "the
   node stopped unexpectedly", with none waiting the page gets
-  `nodestopped`. A failed sync gets a new helper next time; a cancelled
-  one keeps its node.
+  `nodestopped`. A failed sync, or one stopped before the node was up
+  (`nodeUp` in the reply), gets a new helper next time: the library's app
+  may have started half way. One stopped later keeps its node. Stop
+  pressed while an old helper stops starts no new one.
   Log per backup: it runs on across the helper's restarts. When the
   backup in use changes (Restore another backup, switching, a restore of
   another backup, a settings change) and on close, the lines so far are
   appended to `recovery.log` in the old backup's folder and the page gets
   `logreset`.
+  Closing while something runs asks first, then keeps the window, which
+  shows the node stopping, and quits once it has stopped and the log is
+  with the backup. beforeClose returns at once: on Windows Wails runs it
+  on the window's thread, which would freeze.
   Support: a second "Breez Recovery" process runs while a node runs; it
-  is the node. On Windows Wails runs OnBeforeClose on the UI thread, so
-  the window can freeze while the node stops.
+  is the node.
   The 2026-09-17 crash when Roy picked a second backup came from the
   foreign `channel.backup` above: lnd aborts in server.Start,
   SubscribeInvoices then fails and the account service reads the nil

@@ -62,11 +62,15 @@ type helperMessage struct {
 	// that needs a new start, and the helper exits after this reply.
 	Restart bool `json:"restart,omitempty"`
 	// Canceled says Error is the call's cancellation.
-	Canceled bool            `json:"canceled,omitempty"`
-	Status   *core.Status    `json:"status,omitempty"`
-	History  *core.History   `json:"history,omitempty"`
-	Plan     *core.SweepPlan `json:"plan,omitempty"`
-	TxID     string          `json:"txid,omitempty"`
+	Canceled bool `json:"canceled,omitempty"`
+	// NodeUp (startAndSync) says the node's start had completed: a sync
+	// cancelled after that can go on in the same helper, one cancelled
+	// during the start cannot (the library's app starts only once).
+	NodeUp  bool            `json:"nodeUp,omitempty"`
+	Status  *core.Status    `json:"status,omitempty"`
+	History *core.History   `json:"history,omitempty"`
+	Plan    *core.SweepPlan `json:"plan,omitempty"`
+	TxID    string          `json:"txid,omitempty"`
 }
 
 // writeFrame writes v as one line. json.Marshal escapes every newline inside

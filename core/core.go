@@ -593,6 +593,12 @@ func (c *Core) startNode(ctx context.Context) error {
 	if !c.HasRestoredNode() {
 		return fmt.Errorf("no restored backup in %s", c.cfg.WorkDir)
 	}
+	// Before anything is written into the folder. The helper holds it
+	// already; the command line may find the node of an app's helper still
+	// stopping there, after its window crashed.
+	if err := c.holdBackup(c.dir()); err != nil {
+		return err
+	}
 	svc := c.svc
 	if svc == nil {
 		svc = newServices("", nil)
@@ -1202,6 +1208,10 @@ func (c *Core) checkPeers(ctx context.Context) error {
 	ok := 0
 	for _, p := range c.peers() {
 		if err := bitcoinHandshake(ctx, p); err != nil {
+			// A stop is not a peer that does not answer.
+			if ctx.Err() != nil {
+				return ctx.Err()
+			}
 			reasons = append(reasons, p+": "+err.Error())
 			c.progressf("Bitcoin peer %s does not answer: %v", p, err)
 			continue

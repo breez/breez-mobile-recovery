@@ -22,10 +22,19 @@ func (nopReporter) SignIn(string, string) {}
 
 func testCore(t *testing.T, root string) *Core {
 	t.Helper()
+	return testCoreWith(t, root, nopReporter{})
+}
+
+// testCoreWith is testCore with the reporter rep. The work folder's lock is
+// released before the folder is removed: Windows does not delete an open
+// file.
+func testCoreWith(t *testing.T, root string, rep Reporter) *Core {
+	t.Helper()
 	SetInUse("", 0)
 	cfg := DefaultConfig()
 	cfg.WorkDir = root
-	return New(cfg, nopReporter{})
+	t.Cleanup(func() { ReleaseLocks(root) })
+	return New(cfg, rep)
 }
 
 // testDB is a small valid database holding marker, as bytes.

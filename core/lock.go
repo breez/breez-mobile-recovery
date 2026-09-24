@@ -24,10 +24,11 @@ import (
 // run that just ended.
 //
 // The app's node helper runs under the window's lock and locks its backup
-// folder (backups/<name>/instance.lock) the same way. The window checks
-// that lock before it moves or selects a backup folder: a helper left
-// running by a window that crashed writes into its folder until its own
-// stop ends, 25 s at most.
+// folder (backups/<name>/instance.lock) the same way, and so does the
+// command line when it starts a node. The window checks that lock before
+// it moves or selects a backup folder: a helper left running by a window
+// that crashed writes into its folder until its own stop ends, 25 s at
+// most.
 const (
 	lockFileName = "instance.lock"
 	lockWait     = 20 * time.Second
@@ -39,6 +40,9 @@ const (
 var (
 	locksMu sync.Mutex
 	locks   = map[string]*bolt.DB{}
+	// backupLockWait is how long a node's start waits for the lock of its
+	// backup folder; a variable for the tests.
+	backupLockWait = lockWait
 )
 
 // ErrBackupInUse is returned while a node in another process still runs on
@@ -75,6 +79,27 @@ func holdLock(folder string, wait time.Duration, busy func(dir string, err error
 	return nil
 }
 
+// ReleaseLocks gives up this process's locks of the folders dirs: the app's
+// for a work folder it no longer uses, and the tests' before their
+// temporary folders are removed (Windows does not delete an open file).
+func ReleaseLocks(dirs ...string) {
+	locksMu.Lock()
+	defer locksMu.Unlock()
+	for _, d := range dirs {
+		if d == "" {
+			continue
+		}
+		dir, err := filepath.Abs(d)
+		if err != nil {
+			continue
+		}
+		if db := locks[dir]; db != nil {
+			db.Close()
+			delete(locks, dir)
+		}
+	}
+}
+
 // LockBackup makes the restored backup name the one in use in a session
 // made with SkipLock, the app's node helper. It holds the backup's folder
 // for the rest of the process, first waiting for a node that still runs on
@@ -90,20 +115,28 @@ func (c *Core) LockBackup(name string) error {
 		return fmt.Errorf("no restored backup %q in %s", name, c.cfg.WorkDir)
 	}
 	dir := c.backupDir(name)
-	same := func(_ string, err error) error { return err }
-	err := holdLock(dir, time.Millisecond, same)
-	if errors.Is(err, bolt.ErrTimeout) {
-		c.progressf("Waiting for the node that ran on this backup to stop...")
-		err = holdLock(dir, lockWait, same)
-	}
-	if errors.Is(err, bolt.ErrTimeout) {
-		return ErrBackupInUse
-	}
-	if err != nil {
+	if err := c.holdBackup(dir); err != nil {
 		return err
 	}
 	c.nodeDir = dir
 	return nil
+}
+
+// holdBackup takes the lock of the backup folder dir for the rest of the
+// process, first waiting for a node that still runs on it in another
+// process: the helper of a window that crashed stops within 25 s. The node
+// starts only under it, in the helper and on the command line.
+func (c *Core) holdBackup(dir string) error {
+	same := func(_ string, err error) error { return err }
+	err := holdLock(dir, time.Millisecond, same)
+	if errors.Is(err, bolt.ErrTimeout) {
+		c.progressf("Waiting for the node that ran on this backup to stop...")
+		err = holdLock(dir, backupLockWait, same)
+	}
+	if errors.Is(err, bolt.ErrTimeout) {
+		return ErrBackupInUse
+	}
+	return err
 }
 
 // backupFree returns ErrBackupInUse while another process holds the lock of
