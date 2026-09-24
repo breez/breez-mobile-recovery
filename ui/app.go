@@ -258,7 +258,10 @@ func (a *App) run(name string, fn func(ctx context.Context) error) error {
 		if errors.Is(err, context.Canceled) {
 			err = errors.New("cancelled")
 		}
-		a.log.tool("error: " + err.Error())
+		// A planned restart is not an error; relaunch logs it.
+		if !errors.Is(err, core.ErrRestartRequired) {
+			a.log.tool("error: " + err.Error())
+		}
 	}
 	return err
 }
