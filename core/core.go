@@ -20,6 +20,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/breez/breez/backup"
@@ -236,6 +237,7 @@ func setNodeLogSink(sink func(string)) {
 			sc := bufio.NewScanner(r)
 			sc.Buffer(make([]byte, 64*1024), 1024*1024)
 			for sc.Scan() {
+				noteNodeLine(sc.Text())
 				logSinkMu.Lock()
 				s := logSink
 				logSinkMu.Unlock()
@@ -669,9 +671,9 @@ func (c *Core) firstStart(ctx context.Context) error {
 		return err
 	}
 	// The library cannot be re-initialised in-process after a stop (it
-	// hangs), so the caller restarts the whole program. Stop can hang too
-	// on some nodes after lnd itself is down, so give it a bounded wait;
-	// the program exit releases whatever is left.
+	// hangs), so the caller restarts the whole program. StopWithin returns
+	// once lnd is down even when the library's Stop hangs; the program
+	// exit releases whatever is left.
 	c.progressf("Caught up. Stopping the node; the app restarts to continue...")
 	if !c.StopWithin(20 * time.Second) {
 		c.progressf("The node did not stop cleanly; the program exits and starts again.")
@@ -714,18 +716,47 @@ func writeFileAtomic(path string, content []byte) error {
 // was done on this folder (or the look-ahead of releases up to alpha.30).
 func (c *Core) searchDone() bool { return c.marked(addressesExtendedFile) }
 
-// StopWithin calls Stop and reports whether it finished within d.
-func (c *Core) StopWithin(d time.Duration) bool {
+// StopWithin calls Stop and reports whether the node stopped within d.
+func (c *Core) StopWithin(d time.Duration) bool { return stopWithin(c.Stop, d) }
+
+// lndShutdowns counts lnd's "Shutdown complete" lines. lnd logs it from
+// the first deferred call of lnd.Main, which runs last: after its
+// databases, wallet and chain backend are closed.
+var lndShutdowns atomic.Int64
+
+func noteNodeLine(line string) {
+	if strings.Contains(line, "LTND: Shutdown complete") {
+		lndShutdowns.Add(1)
+	}
+}
+
+// stopWithin runs stop and reports whether the node stopped within d. It
+// returns as soon as lnd has finished shutting down: the library's own
+// Stop then hangs for good on some nodes (breez/breez lnnode/daemon.go
+// stopDaemon waits for its goroutines while holding a lock one of them
+// takes), which cost every restart its whole wait. Every caller exits the
+// program next, which ends what is left of the library.
+func stopWithin(stop func(), d time.Duration) bool {
+	before := lndShutdowns.Load()
 	done := make(chan struct{})
 	go func() {
-		c.Stop()
+		stop()
 		close(done)
 	}()
-	select {
-	case <-done:
-		return true
-	case <-time.After(d):
-		return false
+	deadline := time.After(d)
+	tick := time.NewTicker(50 * time.Millisecond)
+	defer tick.Stop()
+	for {
+		select {
+		case <-done:
+			return true
+		case <-deadline:
+			return false
+		case <-tick.C:
+			if lndShutdowns.Load() > before {
+				return true
+			}
+		}
 	}
 }
 

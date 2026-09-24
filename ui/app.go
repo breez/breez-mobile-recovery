@@ -101,15 +101,8 @@ func (a *App) beforeClose(ctx context.Context) bool {
 		a.opMu.Unlock()
 	}
 	a.cancelCurrent()
-	done := make(chan struct{})
-	go func() {
-		c.Stop()
-		close(done)
-	}()
-	select {
-	case <-done:
-	case <-time.After(15 * time.Second):
-	}
+	// Returns once lnd is down: the library's Stop can hang after that.
+	c.StopWithin(15 * time.Second)
 	return false
 }
 
