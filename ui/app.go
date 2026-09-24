@@ -439,21 +439,41 @@ func (a *App) Restore(req RestoreRequest) error {
 // RestoreOther prepares for restoring a different backup. The breez
 // library stays bound to the first backup folder it ran on, so when it
 // already runs in this process the app starts again and opens on the
-// backup sources. It reports whether it is restarting.
-func (a *App) RestoreOther() (bool, error) {
+// backup sources. It reports whether it is restarting. ask: money of this
+// app is still on its way, which moves only while it runs; confirm first.
+func (a *App) RestoreOther(ask bool) (bool, error) {
 	c := a.c()
 	if !c.LibraryBound() {
 		return false, nil
 	}
-	if !a.opMu.TryLock() {
-		return false, errBusy
+	if ask {
+		answer, err := wruntime.MessageDialog(a.ctx, wruntime.MessageDialogOptions{
+			Type:          wruntime.QuestionDialog,
+			Title:         "Restore another backup?",
+			Message:       "Funds of this app are still on their way and move only while it runs. Restore this backup again later to finish.\n\nRestore another backup now?",
+			Buttons:       []string{"Yes", "No"},
+			DefaultButton: "No",
+			CancelButton:  "No",
+		})
+		if err != nil {
+			return false, err
+		}
+		if answer != "Yes" && answer != "Ok" {
+			return false, errors.New("restore another backup cancelled")
+		}
 	}
+	// Wait out a status refresh or a history load instead of refusing.
+	a.opMu.Lock()
 	defer a.opMu.Unlock()
+	// Stopping the node takes a while: the page says so now.
+	wruntime.EventsEmit(a.ctx, "restarting")
 	a.log.tool("stopping the node to restore a different backup")
 	if !c.StopWithin(20 * time.Second) {
 		a.log.tool("the node did not stop cleanly; the program exits and starts again")
 	}
-	a.relaunch("restore-other")
+	if !a.relaunch("restore-other") {
+		return false, errRelaunchFailed
+	}
 	return true, nil
 }
 
@@ -507,6 +527,23 @@ const relaunchEnv = "BREEZ_RECOVERY_RELAUNCH"
 // on the screen it continues on, so the restart does not look like a new
 // app opening at the default size in the middle of the screen.
 const windowEnv = "BREEZ_RECOVERY_WINDOW"
+
+// withEnv returns env with the key=value pairs of set replacing any
+// earlier values of those keys.
+func withEnv(env []string, set ...string) []string {
+	keys := map[string]bool{}
+	for _, kv := range set {
+		k, _, _ := strings.Cut(kv, "=")
+		keys[k] = true
+	}
+	var out []string
+	for _, kv := range env {
+		if k, _, _ := strings.Cut(kv, "="); !keys[k] {
+			out = append(out, kv)
+		}
+	}
+	return append(out, set...)
+}
 
 // relaunchWindow reads windowEnv; ok is false on a normal start.
 func relaunchWindow() (x, y, w, h int, ok bool) {
@@ -572,14 +609,18 @@ func (a *App) relaunch(then string) bool {
 		return false
 	}
 	cmd := exec.Command(exe)
-	for _, kv := range os.Environ() {
-		if !strings.HasPrefix(kv, relaunchEnv+"=") && !strings.HasPrefix(kv, windowEnv+"=") {
-			cmd.Env = append(cmd.Env, kv)
-		}
-	}
+	a.coreMu.Lock()
+	workDir, peers := a.cfg.WorkDir, a.cfg.Peers
+	a.coreMu.Unlock()
 	x, y := wruntime.WindowGetPosition(a.ctx)
 	w, h := wruntime.WindowGetSize(a.ctx)
-	cmd.Env = append(cmd.Env, relaunchEnv+"="+then, fmt.Sprintf("%s=%d,%d,%d,%d", windowEnv, x, y, w, h))
+	// The Advanced settings go along; the new copy would otherwise use the
+	// default work folder and peers.
+	cmd.Env = withEnv(os.Environ(),
+		relaunchEnv+"="+then,
+		fmt.Sprintf("%s=%d,%d,%d,%d", windowEnv, x, y, w, h),
+		"BREEZ_RECOVERY_WORKDIR="+workDir,
+		"BREEZ_RECOVERY_PEERS="+peers)
 	if err := cmd.Start(); err != nil {
 		a.relaunchFailed(err)
 		return false

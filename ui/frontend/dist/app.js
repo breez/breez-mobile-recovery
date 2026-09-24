@@ -467,7 +467,10 @@
       });
       lists.appendChild(list);
     }
-    $("#wallet-node").textContent = "Node " + st.nodeId + ", block " + st.blockHeight.toLocaleString("en-US") + ", " + st.peers + " channel peer" + (st.peers === 1 ? "" : "s");
+    // One line in the footer; the full node id is in the tooltip and the
+    // restored folder's name.
+    $("#wallet-node").textContent = "Node " + shortId(st.nodeId) + " · block " + st.blockHeight.toLocaleString("en-US") + " · " + st.peers + " channel peer" + (st.peers === 1 ? "" : "s");
+    $("#wallet-node").title = st.nodeId;
   }
 
   async function refreshStatus() {
@@ -483,11 +486,11 @@
   // While money is on its way (a closed channel being collected, a close
   // maturing, an unconfirmed balance) the funds screen keeps itself current,
   // quietly: no busy state, and errors wait for the next manual refresh.
+  function isMoving(st) {
+    return !!st && !!(st.pending.length || st.unresolved || st.outgoing || st.onchainUnconfirmed > 0 || (st.closedOnChain || []).some((c) => c.collect > 0));
+  }
   setInterval(async () => {
-    const st = ui.status;
-    if (ui.screen !== "wallet" || ui.busy || !st) return;
-    const moving = st.pending.length || st.unresolved || st.outgoing || st.onchainUnconfirmed > 0 || (st.closedOnChain || []).some((c) => c.collect > 0);
-    if (!moving) return;
+    if (ui.screen !== "wallet" || ui.busy || !isMoving(ui.status)) return;
     try { ui.status = await api.GetStatus(); if (ui.screen === "wallet") renderWallet(); } catch (e) { /* next round */ }
   }, 30000);
 
@@ -675,7 +678,14 @@
       // Each backup has a folder of its own, so nothing is overwritten. When
       // the node already ran, the app restarts itself and opens on this step.
       ui.force = false;
-      if (await api.RestoreOther()) { working("Restarting", false); return; }
+      // Money still on its way moves only while this node runs: ask first.
+      const ask = ui.screen === "done" || (ui.screen === "wallet" && isMoving(ui.status));
+      try {
+        if (await api.RestoreOther(ask)) { working("Restarting", false); return; }
+      } catch (e) {
+        if (isCancel(e)) return; // answered No
+        throw e;
+      }
       show("source");
     },
     "back-welcome": async () => { await refreshState(); show("welcome"); },
@@ -748,6 +758,8 @@
     rt.EventsOn("log", (lines) => appendLog(Array.isArray(lines) ? lines : [String(lines)]));
     rt.EventsOn("progress", (msg) => pushRecent(String(msg)));
     rt.EventsOn("sync", onSync);
+    // Sent before the node stops, which takes a while.
+    rt.EventsOn("restarting", () => { working("Restarting", false); setBusy(true); });
     rt.EventsOn("signin", (info) => {
       $("#signin-url").value = info.url;
       $("#signin-link").classList.remove("hidden");

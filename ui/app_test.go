@@ -1,6 +1,7 @@
 package main
 
 import (
+	"strings"
 	"testing"
 
 	wruntime "github.com/wailsapp/wails/v2/pkg/runtime"
@@ -37,5 +38,16 @@ func TestRelaunchWindowPlace(t *testing.T) {
 	}
 	if fitsScreen(nil, 0, 0, 1100, 760) {
 		t.Error("fits with no screen known")
+	}
+}
+
+// The restarted copy gets the current settings, not the ones it was
+// started with, and keeps the rest of the environment.
+func TestWithEnvReplaces(t *testing.T) {
+	got := withEnv([]string{"HOME=/h", "BREEZ_RECOVERY_WORKDIR=/old", "BREEZ_RECOVERY_RELAUNCH=continue", "PATH=/p"},
+		"BREEZ_RECOVERY_RELAUNCH=restore-other", "BREEZ_RECOVERY_WORKDIR=/new", "BREEZ_RECOVERY_PEERS=")
+	want := []string{"HOME=/h", "PATH=/p", "BREEZ_RECOVERY_RELAUNCH=restore-other", "BREEZ_RECOVERY_WORKDIR=/new", "BREEZ_RECOVERY_PEERS="}
+	if strings.Join(got, " ") != strings.Join(want, " ") {
+		t.Errorf("got %q\nwant %q", got, want)
 	}
 }

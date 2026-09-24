@@ -93,6 +93,7 @@ func DefaultConfig() Config {
 	}
 	return Config{
 		WorkDir:            firstNonEmpty(os.Getenv("BREEZ_RECOVERY_WORKDIR"), workDir),
+		Peers:              os.Getenv("BREEZ_RECOVERY_PEERS"), // set by the app for its restarted copy
 		Network:            "mainnet",
 		BreezServer:        DefaultBreezServer,
 		BootstrapURL:       DefaultBootstrapURL,
