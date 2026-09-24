@@ -42,10 +42,13 @@ func (c *Core) checkRestoreTarget(name string, force bool) error {
 		return fmt.Errorf("invalid backup name %q", name)
 	}
 	dir := c.backupDir(name)
-	if boundLibDir != "" {
+	if bound, _ := inUse(); bound != "" {
 		// The library holds its first folder's databases for the whole
 		// process; the program has to start again first.
 		return ErrLibraryBound
+	}
+	if err := backupFree(dir); err != nil {
+		return err
 	}
 	if hasWallet(dir, c.cfg.Network) && !force {
 		return ErrNodeExists

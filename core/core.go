@@ -81,6 +81,11 @@ type Config struct {
 	GoogleClientID     string
 	GoogleClientSecret string
 	ICloudAPIToken     string
+	// SkipLock is for the app's node helper, which works under the lock of
+	// the window that started it: New takes no work-folder lock and leaves
+	// the folder's layout alone (no move of an older layout, `current`
+	// unread), and LockBackup picks the backup.
+	SkipLock bool
 }
 
 // DefaultConfig returns the production configuration with the work dir
@@ -95,7 +100,7 @@ func DefaultConfig() Config {
 	}
 	return Config{
 		WorkDir:            firstNonEmpty(os.Getenv("BREEZ_RECOVERY_WORKDIR"), workDir),
-		Peers:              os.Getenv("BREEZ_RECOVERY_PEERS"), // set by the app for its restarted copy
+		Peers:              os.Getenv("BREEZ_RECOVERY_PEERS"), // set by the app for the copies of itself it starts
 		Network:            "mainnet",
 		BreezServer:        DefaultBreezServer,
 		BootstrapURL:       DefaultBootstrapURL,
@@ -177,13 +182,19 @@ type Core struct {
 // the reporter, once per process.
 func New(cfg Config, rep Reporter) *Core {
 	c := &Core{cfg: cfg, rep: rep}
-	if cfg.WorkDir == "" {
+	switch {
+	case cfg.WorkDir == "":
 		c.layoutErr = errors.New("no work folder: the home folder could not be found, set one in Advanced settings")
-	} else if err := lockWorkDir(cfg.WorkDir); err != nil {
-		c.layoutErr = err
-	} else if err := c.loadLayout(); err != nil {
-		// Reported by every operation that needs the folder.
-		c.layoutErr = err
+	case cfg.SkipLock:
+		// The node helper: the window holds the folder and keeps its
+		// layout.
+	default:
+		if err := lockWorkDir(cfg.WorkDir); err != nil {
+			c.layoutErr = err
+		} else if err := c.loadLayout(); err != nil {
+			// Reported by every operation that needs the folder.
+			c.layoutErr = err
+		}
 	}
 	setNodeLogSink(func(line string) {
 		if trackRescan(line) {
@@ -525,7 +536,7 @@ func (c *Core) initLibrary(svc *services) error {
 	if c.dir() == "" {
 		return errors.New("no backup selected")
 	}
-	if boundLibDir != "" && boundLibDir != c.dir() {
+	if bound, _ := inUse(); bound != "" && bound != c.dir() {
 		return ErrLibraryBound
 	}
 	if c.initialized && c.svc != nil && svc.providerName == c.svc.providerName {
@@ -540,8 +551,7 @@ func (c *Core) initLibrary(svc *services) error {
 	}
 	// Bound from here on, even when Init fails half way: the library may
 	// already hold this folder's databases.
-	boundPayments, _ = countPayments(filepath.Join(c.dir(), "breez.db"))
-	boundLibDir = c.dir()
+	SetInUse(c.dir(), PaymentCount(c.dir()))
 	if err := bindings.Init(tmp, c.dir(), svc); err != nil {
 		return err
 	}

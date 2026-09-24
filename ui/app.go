@@ -178,8 +178,11 @@ func (l *logBuffer) add(line string) {
 	l.pending = append(l.pending, line)
 }
 
-func (l *logBuffer) tool(msg string) {
-	l.add(time.Now().Format("15:04:05") + "  [recovery] " + msg)
+func (l *logBuffer) tool(msg string) { l.add(toolLine(msg)) }
+
+// toolLine is how a line of the app's own reads in the log.
+func toolLine(msg string) string {
+	return time.Now().Format("15:04:05") + "  [recovery] " + msg
 }
 
 func (l *logBuffer) node(line string) {
@@ -566,36 +569,13 @@ func (a *App) UseRestored(name string) (bool, error) {
 func (a *App) StartAndSync() (*core.Status, error) {
 	var st *core.Status
 	err := a.run("start node and sync", func(ctx context.Context) error {
-		c := a.c()
-		if err := c.StartNode(ctx); err != nil {
-			if errors.Is(err, core.ErrRestartRequired) && !a.relaunch("continue") {
-				return errRelaunchFailed
-			}
-			return err
-		}
-		err := c.WaitSynced(ctx, func(p core.SyncProgress) {
-			// The search for later funds reports twice a second with the
-			// same words; its log lines come from core.
-			if p.Stage != "addresses" {
-				a.log.tool(p.Message)
-			}
+		var err error
+		st, err = syncNode(ctx, a.c(), a.log.tool, func(p core.SyncProgress) {
 			wruntime.EventsEmit(a.ctx, "sync", p)
 		})
 		if errors.Is(err, core.ErrRestartRequired) && !a.relaunch("continue") {
 			return errRelaunchFailed
 		}
-		if err != nil {
-			return err
-		}
-		// Before anything is shown as spendable, make sure the chain agrees
-		// that the channels are open. A backup taken before a channel
-		// closed still lists it.
-		if _, err := c.CheckChannelsOnChain(ctx, func(p core.SyncProgress) {
-			wruntime.EventsEmit(a.ctx, "sync", p)
-		}); err != nil {
-			return err
-		}
-		st, err = c.Status(ctx)
 		return err
 	})
 	return st, err

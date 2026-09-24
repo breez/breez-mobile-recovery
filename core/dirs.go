@@ -12,6 +12,7 @@ import (
 	"regexp"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/breez/breez/data"
@@ -51,14 +52,47 @@ var backupNameRE = regexp.MustCompile(`^[a-z0-9][a-z0-9-]{3,80}$`)
 // databases are process-wide, so the program has to start again first.
 var ErrLibraryBound = errors.New("the app has to restart before it can work on a different backup")
 
-// boundLibDir is the folder the breez library was initialised on in this
-// process, "" before that. Package level like the library's own state: a
-// second Core in the same process is bound just the same.
-var boundLibDir string
+var (
+	inUseMu sync.Mutex
+	// boundLibDir is the backup folder a node runs on: the folder the breez
+	// library was initialised on in this process, or the one of the node
+	// helper the app runs (SetInUse); "" when there is none. Package level
+	// like the library's own state: a second Core in the same process is
+	// bound just the same.
+	boundLibDir string
+	// boundPayments is the length of the payment list of boundLibDir,
+	// counted before the node opened it (RestoredBackups cannot read it
+	// after).
+	boundPayments int
+)
 
-// boundPayments is the length of the payment list of boundLibDir, counted
-// before the library opened it (RestoredBackups cannot read it after).
-var boundPayments int
+// inUse returns boundLibDir and boundPayments.
+func inUse() (dir string, payments int) {
+	inUseMu.Lock()
+	defer inUseMu.Unlock()
+	return boundLibDir, boundPayments
+}
+
+// SetInUse records that a node runs on the backup folder dir, in this
+// process (initLibrary) or in a node helper this process started, with
+// payments the length of the folder's payment list counted before the node
+// opened it (PaymentCount). A restore and a switch to another backup are
+// refused while it is set, and the restored apps list takes the count from
+// here. The window clears it with SetInUse("", 0) once its helper has
+// exited; the library in this process never lets go.
+func SetInUse(dir string, payments int) {
+	inUseMu.Lock()
+	defer inUseMu.Unlock()
+	boundLibDir, boundPayments = dir, payments
+}
+
+// PaymentCount is the length of the app's payment list in the backup
+// folder dir, 0 when it cannot be read. A running node holds the file, so
+// it is read before the node starts.
+func PaymentCount(dir string) int {
+	n, _ := countPayments(filepath.Join(dir, "breez.db"))
+	return n
+}
 
 // hasNode reports whether the folder holds a restored app: all three node
 // files. A wallet without its channel database is not one (lnd would start
@@ -104,8 +138,14 @@ func (c *Core) selectBackup(name string) error {
 		return fmt.Errorf("invalid backup name %q", name)
 	}
 	dir := c.backupDir(name)
-	if boundLibDir != "" && boundLibDir != dir {
+	bound, _ := inUse()
+	if bound != "" && bound != dir {
 		return ErrLibraryBound
+	}
+	if bound != dir {
+		if err := backupFree(dir); err != nil {
+			return err
+		}
 	}
 	if err := os.MkdirAll(dir, 0700); err != nil {
 		return err
@@ -139,6 +179,7 @@ type RestoredBackup struct {
 // RestoredBackups lists the backups restored on this computer.
 func (c *Core) RestoredBackups() []RestoredBackup {
 	entries, _ := os.ReadDir(filepath.Join(c.cfg.WorkDir, backupsFolder))
+	bound, boundN := inUse()
 	var out []RestoredBackup
 	for _, e := range entries {
 		dir := c.backupDir(e.Name())
@@ -148,7 +189,7 @@ func (c *Core) RestoredBackups() []RestoredBackup {
 				rb.NodeID = ""
 				if raw, err := os.ReadFile(filepath.Join(dir, nodeIDFile)); err == nil {
 					rb.NodeID = strings.TrimSpace(string(raw))
-				} else if dir != boundLibDir {
+				} else if dir != bound {
 					// Restored before the id was kept, or unreadable then.
 					if id, err := nodeIDOf(dir, c.cfg.Network); err == nil {
 						rb.NodeID = id
@@ -163,8 +204,8 @@ func (c *Core) RestoredBackups() []RestoredBackup {
 			// Read from breez.db directly, so it is there before the node
 			// ever ran; the folder the library has open here was counted
 			// just before it was opened.
-			if dir == boundLibDir {
-				rb.Payments = boundPayments
+			if dir == bound {
+				rb.Payments = boundN
 			} else if n, err := countPayments(filepath.Join(dir, "breez.db")); err == nil {
 				rb.Payments = n
 			}
@@ -293,8 +334,12 @@ func (c *Core) CurrentBackup() string {
 func (c *Core) NodeDir() string { return c.nodeDir }
 
 // LibraryBound reports whether this process already runs the breez library,
-// which ties it to one backup folder until the program restarts.
-func (c *Core) LibraryBound() bool { return boundLibDir != "" }
+// which ties it to one backup folder until the program restarts, or runs a
+// node helper (SetInUse).
+func (c *Core) LibraryBound() bool {
+	dir, _ := inUse()
+	return dir != ""
+}
 
 // loadLayout moves a node left directly in the work folder by an older
 // release into backups/, then reads which backup is in use.

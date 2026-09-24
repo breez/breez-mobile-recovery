@@ -22,7 +22,7 @@ func (nopReporter) SignIn(string, string) {}
 
 func testCore(t *testing.T, root string) *Core {
 	t.Helper()
-	boundLibDir = ""
+	SetInUse("", 0)
 	cfg := DefaultConfig()
 	cfg.WorkDir = root
 	return New(cfg, nopReporter{})
@@ -426,8 +426,8 @@ func TestLibraryBindsTheProcessToOneFolder(t *testing.T) {
 	if err := place(t, c, nodeA, "A", false); err != nil {
 		t.Fatal(err)
 	}
-	boundLibDir = c.dir()
-	defer func() { boundLibDir = "" }()
+	SetInUse(c.dir(), 0)
+	defer SetInUse("", 0)
 	if err := place(t, c, nodeB, "B", false); !errors.Is(err, ErrLibraryBound) {
 		t.Fatalf("other backup while bound: %v, want ErrLibraryBound", err)
 	}

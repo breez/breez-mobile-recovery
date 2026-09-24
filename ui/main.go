@@ -5,6 +5,7 @@ package main
 
 import (
 	"embed"
+	"os"
 
 	"github.com/wailsapp/wails/v2"
 	"github.com/wailsapp/wails/v2/pkg/options"
@@ -23,6 +24,13 @@ var assets embed.FS
 var icon []byte
 
 func main() {
+	// The node helper, started by the window (helper.go). Checked before
+	// anything of Wails: its runtime functions end a program that has no
+	// window.
+	if os.Getenv(helperEnv) != "" {
+		runHelper()
+		return
+	}
 	app := newApp()
 	_, _, _, _, relaunched := relaunchWindow()
 	err := wails.Run(&options.App{
