@@ -28,6 +28,7 @@
     busy: false,
     useName: "",          // restored backup picked on the start screen
     currentName: "",      // restored backup in use
+    restored: new Set(),  // names (node ids) of the backups restored here
   };
 
   // ---------------------------------------------------------------- helpers
@@ -195,7 +196,7 @@
     try {
       const snaps = google ? await api.ListGoogle() : await api.ListICloud();
       ui.snapshots = snaps || [];
-      renderSnapshots();
+      renderSnapshots(await restoredNames());
       show("pick");
     } catch (e) {
       show("source");
@@ -212,7 +213,20 @@
     }
   }
 
-  function renderSnapshots() {
+  async function restoredNames() {
+    return new Set(((await api.RestoredApps()) || []).map((a) => a.name));
+  }
+
+  // Back on the list after a phrase or a failed restore, which may have
+  // placed the folder already: the tags are read again, the pick is kept.
+  async function showPick() {
+    renderSnapshots(await restoredNames());
+    show("pick");
+  }
+
+  function renderSnapshots(restored) {
+    ui.restored = restored;
+    const keep = ui.selected && ui.selected.nodeId;
     const list = $("#snapshot-list");
     list.innerHTML = "";
     ui.selected = null;
@@ -223,17 +237,25 @@
       if (unsupported) item.classList.add("disabled");
       const main = el("div", "item-main");
       const title = el("div", "item-title", "Last backup " + fmtDate(s.modifiedTime));
-      if (i === 0) {
-        const t = el("span", "tag", "Latest");
+      // Said before the pick: choosing one restored here asks whether to
+      // continue with it or restore it again.
+      const tags = (i === 0 ? ["Latest"] : []).concat(ui.restored.has(s.nodeId) ? ["Restored"] : []);
+      tags.forEach((text) => {
+        const t = el("span", "tag", text);
         t.style.marginLeft = "8px";
         title.appendChild(t);
-      }
+      });
       main.appendChild(title);
       main.appendChild(el("div", "item-sub", s.nodeId));
       item.appendChild(main);
       const lab = encLabel(s);
       item.appendChild(el("span", "tag " + lab.cls, lab.text));
       if (!unsupported) {
+        if (s.nodeId === keep) {
+          ui.selected = s;
+          item.classList.add("selected");
+          $("#pick-continue").disabled = false;
+        }
         item.addEventListener("click", () => {
           ui.selected = s;
           $$("#snapshot-list .item").forEach((x) => x.classList.remove("selected"));
@@ -329,7 +351,7 @@
         $("#phrase-count").textContent = msg;
         $("#phrase-count").className = "hint err";
       } else {
-        show(ui.source === "zip" ? "source" : "pick");
+        if (ui.source === "zip") show("source"); else await showPick();
         showError(msg);
       }
     }
@@ -753,7 +775,7 @@
     "open-signin": () => api.OpenURL($("#signin-url").value),
     "back-source": () => show("source"),
     "pick-continue": pickContinue,
-    "phrase-back": () => show(ui.source === "zip" ? "source" : "pick"),
+    "phrase-back": () => (ui.source === "zip" ? show("source") : showPick()),
     "phrase-continue": phraseContinue,
     "refresh": refreshStatus,
     "go-history": openHistory,
