@@ -47,6 +47,12 @@ type App struct {
 func newApp() *App {
 	a := &App{cfg: core.DefaultConfig(), log: newLogBuffer(20000)}
 	a.core = core.New(a.cfg, &reporter{app: a})
+	// Restarted by the app itself: the log so far comes along. core.New
+	// returned, so this copy holds the work folder and the old one, which
+	// writes the file just before it exits, is gone.
+	if os.Getenv(relaunchEnv) != "" {
+		a.log.load(filepath.Join(a.cfg.WorkDir, restartLogFile))
+	}
 	// Restarted by UseRestored to continue with another restored backup:
 	// switch before the page asks what is in use.
 	if name, ok := strings.CutPrefix(os.Getenv(relaunchEnv), "use:"); ok {
@@ -185,6 +191,36 @@ func (l *logBuffer) tool(msg string) {
 
 func (l *logBuffer) node(line string) {
 	l.add(line)
+}
+
+// restartLogFile carries the log from a copy of the program to the one it
+// starts in its place, so the Logs panel and Save log cover the whole
+// restore and not only the last start.
+const restartLogFile = "restart.log"
+
+// save writes every line to path, for the copy started in this one's place.
+func (l *logBuffer) save(path string) error {
+	return os.WriteFile(path, []byte(l.text()), 0600)
+}
+
+// load puts the lines a previous copy saved before this copy's own, and
+// removes the file so a later start does not show them again.
+func (l *logBuffer) load(path string) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return
+	}
+	os.Remove(path)
+	text := strings.TrimRight(string(data), "\n")
+	if text == "" {
+		return
+	}
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	l.lines = append(strings.Split(text, "\n"), l.lines...)
+	if len(l.lines) > l.max {
+		l.lines = l.lines[len(l.lines)-l.max:]
+	}
 }
 
 func (l *logBuffer) text() string {
@@ -684,6 +720,9 @@ func (a *App) relaunch(then string) bool {
 	// winding down and the new copy needs the work folder released.
 	go func() {
 		time.Sleep(500 * time.Millisecond)
+		// Last, so the lines of the node stopping are in it too. A failure
+		// only costs the new copy the lines before the restart.
+		_ = a.log.save(filepath.Join(workDir, restartLogFile))
 		os.Exit(0)
 	}()
 	return true

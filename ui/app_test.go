@@ -1,6 +1,8 @@
 package main
 
 import (
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -49,5 +51,31 @@ func TestWithEnvReplaces(t *testing.T) {
 	want := []string{"HOME=/h", "PATH=/p", "BREEZ_RECOVERY_RELAUNCH=restore-other", "BREEZ_RECOVERY_WORKDIR=/new", "BREEZ_RECOVERY_PEERS="}
 	if strings.Join(got, " ") != strings.Join(want, " ") {
 		t.Errorf("got %q\nwant %q", got, want)
+	}
+}
+
+// A restart keeps the log: the new copy shows the old copy's lines first,
+// once, and never more than its limit.
+func TestLogCarriesOverRestart(t *testing.T) {
+	path := filepath.Join(t.TempDir(), restartLogFile)
+	old := newLogBuffer(10)
+	old.add("restoring")
+	old.add("restarting the app")
+	if err := old.save(path); err != nil {
+		t.Fatal(err)
+	}
+	cur := newLogBuffer(3)
+	cur.add("Breez Recovery dev")
+	cur.load(path)
+	if got := strings.Join(cur.lines, "|"); got != "restoring|restarting the app|Breez Recovery dev" {
+		t.Errorf("lines %q", got)
+	}
+	if _, err := os.Stat(path); !os.IsNotExist(err) {
+		t.Errorf("the carried log was not removed: %v", err)
+	}
+	cur.load(path) // nothing left to load
+	cur.add("synced")
+	if got := strings.Join(cur.lines, "|"); got != "restarting the app|Breez Recovery dev|synced" {
+		t.Errorf("after the limit: %q", got)
 	}
 }
