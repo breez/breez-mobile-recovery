@@ -160,19 +160,32 @@
       const item = el("div", "item" + (a.name === ui.useName ? " selected" : ""));
       item.title = a.dir;
       const main = el("div", "item-main");
-      main.appendChild(el("div", "item-title", a.lastOpened ? "Last opened " + fmtDate(a.lastOpened) : "Not opened yet"));
+      const title = el("div", "item-title", a.lastOpened ? "Last opened " + fmtDate(a.lastOpened) : "Not opened yet");
+      // An app that was used, told apart from empty test apps.
+      if (a.payments > 0) {
+        const t = el("span", "tag", "Has history");
+        t.style.marginLeft = "8px";
+        t.title = a.payments + " entr" + (a.payments === 1 ? "y" : "ies") + " in the app's payment list";
+        title.appendChild(t);
+      }
+      main.appendChild(title);
       // A backup file restored before its node id was kept shows as such.
       main.appendChild(el("div", "item-sub", a.nodeId || "From a backup file"));
-      item.appendChild(main);
-      // What its funds screen showed last; nothing when that was nothing,
-      // "settling" when a close with a payout still unknown was under way.
+      // What its funds screen showed last, under the id, in the tiles'
+      // terms and order; it may have changed since. Nothing when that was
+      // nothing.
       const f = a.funds;
-      const total = f ? f.inChannels + f.pending + f.onchain : 0;
-      if (total > 0 || (f && f.settling)) {
-        const amount = el("span", "item-amount" + (total > 0 ? "" : " muted"), total > 0 ? fmtSat(total) : "settling");
-        amount.title = "Last known funds, " + fmtDate(f.at);
-        item.appendChild(amount);
-      }
+      const parts = !f ? [] : [
+        [f.inChannels, " in channels"], [f.pending, " pending"], [f.onchain, " on-chain"],
+      ].filter(([v]) => v > 0).map(([v, what]) => fmtSat(v) + what);
+      if (f && f.settling) parts.push("a close settling");
+      // Every row has this line, blank when there is nothing to say, so the
+      // rows are the same height and their lines line up.
+      const note = el("div", "item-note", parts.length ? "Last known: " + parts.join(" · ") : "\u00a0");
+      if (parts.length) note.title = note.textContent + "\nFunds when this app was last open, " + fmtDate(f.at);
+      else note.setAttribute("aria-hidden", "true");
+      main.appendChild(note);
+      item.appendChild(main);
       if (a.current) item.appendChild(el("span", "tag", "In use"));
       item.addEventListener("click", () => {
         ui.useName = a.name;

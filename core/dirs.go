@@ -124,6 +124,10 @@ type RestoredBackup struct {
 	LastOpened *time.Time `json:"lastOpened,omitempty"`
 	// Funds is what its funds screen showed last; nil if it never showed.
 	Funds *LastFunds `json:"funds,omitempty"`
+	// Payments is the length of the app's own payment list (sent,
+	// received, deposits, withdrawals, closed channels): zero for an app
+	// that was never used, or when it could not be read.
+	Payments int `json:"payments,omitempty"`
 }
 
 // RestoredBackups lists the backups restored on this computer.
@@ -143,6 +147,13 @@ func (c *Core) RestoredBackups() []RestoredBackup {
 			if fi, err := os.Stat(lndLogPath(dir, c.cfg.Network)); err == nil {
 				t := fi.ModTime()
 				rb.LastOpened = &t
+			}
+			// Read from breez.db directly, so it is there before the node
+			// ever ran; not from the folder the library has open here.
+			if dir != boundLibDir {
+				if n, err := countPayments(filepath.Join(dir, "breez.db")); err == nil {
+					rb.Payments = n
+				}
 			}
 			if data, err := os.ReadFile(filepath.Join(dir, lastFundsFile)); err == nil {
 				var f LastFunds
@@ -184,6 +195,31 @@ func readNodeID(channelDB string) (string, error) {
 		return nil
 	})
 	return id, err
+}
+
+// countPayments counts the app's payment list in its breez.db: the
+// entries of the "payments" bucket (breez/breez db/db.go, read the same way
+// as FetchAllAccountPayments), nested buckets left out.
+func countPayments(breezDB string) (int, error) {
+	db, err := bolt.Open(breezDB, 0600, &bolt.Options{ReadOnly: true, Timeout: time.Second})
+	if err != nil {
+		return 0, err
+	}
+	defer db.Close()
+	n := 0
+	err = db.View(func(tx *bolt.Tx) error {
+		b := tx.Bucket([]byte("payments"))
+		if b == nil {
+			return nil
+		}
+		return b.ForEach(func(k, v []byte) error {
+			if v != nil {
+				n++
+			}
+			return nil
+		})
+	})
+	return n, err
 }
 
 // BackupName is the folder name a backup gets: the node id for a cloud

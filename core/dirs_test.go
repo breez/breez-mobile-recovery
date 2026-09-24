@@ -249,6 +249,48 @@ func TestRestoredBackupsNodeID(t *testing.T) {
 	}
 }
 
+// The list tells a used app from an empty one by the app's own payment
+// list in breez.db, read without the library.
+func TestRestoredBackupsPayments(t *testing.T) {
+	root := t.TempDir()
+	c := testCore(t, root)
+	for name, marker := range map[string]string{nodeA: "A", nodeB: "B"} {
+		if err := place(t, c, name, marker, false); err != nil {
+			t.Fatal(err)
+		}
+	}
+	db, err := bolt.Open(filepath.Join(c.backupDir(nodeA), "breez.db"), 0600, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	err = db.Update(func(tx *bolt.Tx) error {
+		b, err := tx.CreateBucket([]byte("payments"))
+		if err != nil {
+			return err
+		}
+		if _, err := b.CreateBucket([]byte("index")); err != nil { // nested, not a payment
+			return err
+		}
+		for _, k := range []string{"p1", "p2", "p3"} {
+			if err := b.Put([]byte(k), []byte("payment")); err != nil {
+				return err
+			}
+		}
+		return nil
+	})
+	db.Close()
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := map[string]int{}
+	for _, b := range c.RestoredBackups() {
+		got[b.Name] = b.Payments
+	}
+	if got[nodeA] != 3 || got[nodeB] != 0 {
+		t.Errorf("payments %v, want 3 for A and 0 for B", got)
+	}
+}
+
 func TestRestoreAgainMovesTheOldFolderAside(t *testing.T) {
 	root := t.TempDir()
 	c := testCore(t, root)
