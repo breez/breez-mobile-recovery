@@ -133,7 +133,10 @@ type helper struct {
 	mu       sync.Mutex
 	running  *helperCall // nil while idle
 	stopping bool
-	calls    sync.WaitGroup // calls not yet answered
+	// restarted: a call ended with a planned restart, for which core
+	// stopped the node itself.
+	restarted bool
+	calls     sync.WaitGroup // calls not yet answered
 
 	stopOnce sync.Once
 	exit     func(code int)
@@ -308,6 +311,7 @@ func (h *helper) start(req helperRequest) {
 		h.mu.Lock()
 		h.running = nil // before the reply: the window may send the next call at once
 		h.stopping = h.stopping || restart
+		h.restarted = h.restarted || restart
 		h.mu.Unlock()
 		h.reply(req.ID, m, err)
 		if restart {
@@ -381,7 +385,14 @@ func (h *helper) stop(wait time.Duration) {
 		case <-answered:
 		case <-time.After(grace):
 		}
-		h.core.StopWithin(wait)
+		h.mu.Lock()
+		restarted := h.restarted
+		h.mu.Unlock()
+		// After a planned restart core has stopped the node; a second Stop
+		// could overlap the library's first one.
+		if !restarted {
+			h.core.StopWithin(wait)
+		}
 		h.send(nil)
 		h.exit(0)
 	})

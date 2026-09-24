@@ -47,10 +47,11 @@ var legacyNodeEntries = []string{
 
 var backupNameRE = regexp.MustCompile(`^[a-z0-9][a-z0-9-]{3,80}$`)
 
-// ErrLibraryBound is returned when this process already runs the breez
-// library on one backup folder and another one is asked for. The library's
-// databases are process-wide, so the program has to start again first.
-var ErrLibraryBound = errors.New("the app has to restart before it can work on a different backup")
+// ErrLibraryBound is returned when a node runs on one backup folder, in
+// this process or in the app's node helper, and another one is asked for.
+// The library's databases are process-wide: the process that ran it has to
+// end first. The app stops its helper before it switches.
+var ErrLibraryBound = errors.New("the node of another backup is still running")
 
 var (
 	inUseMu sync.Mutex
@@ -334,7 +335,7 @@ func (c *Core) CurrentBackup() string {
 func (c *Core) NodeDir() string { return c.nodeDir }
 
 // LibraryBound reports whether this process already runs the breez library,
-// which ties it to one backup folder until the program restarts, or runs a
+// which ties it to one backup folder for the rest of the process, or runs a
 // node helper (SetInUse).
 func (c *Core) LibraryBound() bool {
 	dir, _ := inUse()

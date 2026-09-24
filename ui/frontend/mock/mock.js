@@ -8,6 +8,11 @@
   const hasNode = q.get("hasNode") === "1";
   const scenario = q.get("scenario") || "channels";
   const slow = q.get("slow") || "";
+  // ?restart=1: the node starts again once during the sync; ?crash=1: it
+  // stops by itself a few seconds after the funds show.
+  const restart = q.get("restart") === "1";
+  const crash = q.get("crash") === "1";
+  let stopped = false;
   const snaps = [
     { nodeId: "02e66bcb1f4a9d6b3c2a7f8e9d0c1b2a3f4e5d6c7b8a9f0e1d2c3b4a5f6e7d8c9b", modifiedTime: "2026-03-31T14:03:00Z", encrypted: false, encryptionType: "" },
     { nodeId: "02f8439e7a6b5c4d3e2f1a0b9c8d7e6f5a4b3c2d1e0f9a8b7c6d5e4f3a2b1c0d9e", modifiedTime: "2023-07-30T09:12:00Z", encrypted: true, encryptionType: "Mnemonics12" },
@@ -31,7 +36,7 @@
   setInterval(() => log("2026-09-16 20:10:" + String(logn++ % 60).padStart(2, "0") + ".123 [INF] DAEM: Sync to chain interval Synced=false BlockHeight=" + (967290 + logn)), 700);
   const progress = (m) => { emit("progress", m); log(new Date().toLocaleTimeString() + "  [recovery] " + m); };
   window.go = { main: { App: {
-    GetState: async () => ({ version: "0.1.0", os: "linux", workDir: "/home/roys/.breez-recovery", nodeDir: hasNode ? "/home/roys/.breez-recovery/backups/02e66bcb1e3c97de679c0d5b2f831ac913e53acdc99542ed839c17b1079df489ea" : "", restoreOther: false, peers: "", hasNode, logPath: "", googleConfigured: true }),
+    GetState: async () => ({ version: "0.1.0", os: "linux", workDir: "/home/roys/.breez-recovery", nodeDir: hasNode ? "/home/roys/.breez-recovery/backups/02e66bcb1e3c97de679c0d5b2f831ac913e53acdc99542ed839c17b1079df489ea" : "", peers: "", hasNode, logPath: "", googleConfigured: true }),
     ApplySettings: async () => ({}),
     GetLog: async () => ["20:07:01  [recovery] Breez Recovery 0.1.0 on linux/amd64", "20:07:01  [recovery] Work dir: /home/roys/.breez-recovery"],
     ListGoogle: async () => {
@@ -53,10 +58,20 @@
       progress("Backup restored into /home/roys/.breez-recovery/backups/" + nodeId + ".");
     },
     StartAndSync: async () => {
+      stopped = false;
       progress("Starting the node..."); await sleep(800); progress("Node is up.");
       const steps = [["connecting", 0, 0, 0, "Connecting to the bitcoin network..."], ["headers", 589000, 967310, 3, ""], ["headers", 700000, 967310, 6, ""], ["headers", 850000, 967310, 8, ""], ["headers", 940000, 967310, 8, ""], ["rescan", 557139, 967310, 8, "Reached the chain tip. Now checking every block for your channel and payment history; this is the slow part of a first sync.", -1, 0, 0], ["rescan", 612400, 967310, 8, "Checking every block for your channel and payment history (938 addresses). Reached 29 Feb 2020.", 13.5, 7, 1583000000], ["synced", 967310, 967310, 8, "Synced to the chain at block 967310"]];
       let searched = false;
+      let restarted = !restart;
       for (const [stage, height, target, peers, msg, pct, found, through] of steps) {
+        if (stage === "rescan" && !restarted) {
+          restarted = true;
+          const again = (m) => emit("sync", { stage: "start", height: 0, target: 0, peers: 0, percent: -1, message: m, found: 0, throughTime: 0, remaining: -1 });
+          progress("Caught up. Stopping the node to start it again..."); again("Caught up. Stopping the node to start it again...");
+          await sleep(1500);
+          again("Starting the node again...");
+          await sleep(1500);
+        }
         if (stage === "rescan" && !searched) {
           searched = true;
           for (const h of [758000, 860000, 967000]) {
@@ -71,9 +86,10 @@
         emit("sync", { stage: "channels", height, target: 967310, peers: 8, percent: (height - 758000) / (967310 - 758000) * 100, message: "Making sure your channels are still open", found: 0, throughTime: 0, remaining: height === 758000 ? -1 : Math.round((967310 - height) / 550) });
         await sleep(slow === "channels" && height === 860000 ? 600000 : 600);
       }
+      if (crash) setTimeout(() => { stopped = true; emit("nodestopped", "the node stopped unexpectedly. Continue recovery starts it again; Save log has the details"); }, 4000);
       return status;
     },
-    GetStatus: async () => status,
+    GetStatus: async () => { if (stopped) throw new Error("the node is not running. Continue recovery starts it"); return status; },
     GetHistory: async () => ({
       entries: [
         { time: 1789600000, kind: "onchain_out", title: "Sent on-chain", detail: "To bc1qar0srrr7xfkvy5l643lydnw9re59gtzzwf5mdq", amount: 14801, delta: -15721, fee: 920, status: "unconfirmed", txid: "5f4e3d2c1b0a9f8e7d6c5b4a3f2e1d0c9b8a7f6e5d4c3b2a1f0e9d8c7b6a5f4e", address: "bc1qar0srrr7xfkvy5l643lydnw9re59gtzzwf5mdq" },
@@ -93,14 +109,13 @@
     ValidateAddress: async (a) => { if (!/^(bc1|1|3)[a-zA-Z0-9]{20,}$/.test(a)) throw new Error("invalid"); },
     PrepareSweep: async (addr) => { await sleep(600); return { address: addr, amount: 1581900, options: [{ confTarget: 2, fee: 1840, txid: "a" }, { confTarget: 6, fee: 920, txid: "b" }, { confTarget: 25, fee: 410, txid: "c" }] }; },
     BroadcastSweep: async () => { await sleep(600); return "5f4e3d2c1b0a9f8e7d6c5b4a3f2e1d0c9b8a7f6e5d4c3b2a1f0e9d8c7b6a5f4e"; },
-    RestoreOther: async () => false,
-    ShowWindow: async () => {},
+    RestoreOther: async () => { if (hasNode) { emit("stopping"); await sleep(800); emit("logreset"); } },
     RestoredApps: async () => hasNode ? [
       { name: "02e66bcb1f4a9d6b3c2a7f8e9d0c1b2a3f4e5d6c7b8a9f0e1d2c3b4a5f6e7d8c9b", nodeId: "02e66bcb1f4a9d6b3c2a7f8e9d0c1b2a3f4e5d6c7b8a9f0e1d2c3b4a5f6e7d8c9b", dir: "/home/roys/.breez-recovery/backups/02e66bcb1f4a9d6b3c2a7f8e9d0c1b2a3f4e5d6c7b8a9f0e1d2c3b4a5f6e7d8c9b", current: true, lastOpened: "2026-09-24T12:01:00Z", funds: { inChannels: 0, pending: 0, onchain: 0, settling: false, at: "2026-09-24T12:01:00Z" } },
       { name: "02f8439e7a6b5c4d3e2f1a0b9c8d7e6f5a4b3c2d1e0f9a8b7c6d5e4f3a2b1c0d9e", nodeId: "02f8439e7a6b5c4d3e2f1a0b9c8d7e6f5a4b3c2d1e0f9a8b7c6d5e4f3a2b1c0d9e", dir: "/home/roys/.breez-recovery/backups/02f8439e7a6b5c4d3e2f1a0b9c8d7e6f5a4b3c2d1e0f9a8b7c6d5e4f3a2b1c0d9e", current: false, payments: 14, lastOpened: "2026-09-24T13:40:00Z", funds: { inChannels: 0, pending: 15721, onchain: 1581900, at: "2026-09-24T13:40:00Z" } },
       { name: "zip-4c1d9a7e22b0f513", nodeId: "03a1c9e44b2f7d6e8a0b5c3d1e9f7a2b4c6d8e0f1a3b5c7d9e1f3a5b7c9d1e3f5a", dir: "/home/roys/.breez-recovery/backups/zip-4c1d9a7e22b0f513", current: false },
     ] : [],
-    UseRestored: async () => false,
+    UseRestored: async () => { emit("stopping"); await sleep(800); emit("logreset"); },
     Cancel: async () => {}, CopyText: async () => {}, OpenURL: async () => {},
     SaveHistory: async () => "/home/roys/breez-history-2026-09-17.csv",
     SaveLog: async () => "/home/roys/breez-recovery-2026-09-16.log", CopyLog: async () => {}, OpenWorkDir: async () => {},

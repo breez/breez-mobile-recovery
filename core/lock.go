@@ -19,9 +19,9 @@ import (
 //
 // The lock is an open bbolt file: bbolt holds an exclusive file lock on
 // every platform for as long as the file is open, and the operating system
-// releases it when the process ends, however it ends. The wait covers the
-// app restarting itself: the new copy starts while the old one is still
-// winding down.
+// releases it when the process ends, however it ends. The wait covers a
+// copy that is still winding down: a window just closed, or a command line
+// run that just ended.
 //
 // The app's node helper runs under the window's lock and locks its backup
 // folder (backups/<name>/instance.lock) the same way. The window checks

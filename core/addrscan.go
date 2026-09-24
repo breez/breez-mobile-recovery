@@ -818,9 +818,9 @@ func (c *Core) findLaterFunds(ctx context.Context, report func(SyncProgress)) er
 			c.progressf("The app's history is checked in full (%s).", why)
 			return nil
 		}
-		c.progressf("Nothing in the chain concerns this app's addresses. Stopping the node; the app restarts past the history check...")
+		c.progressf("Nothing in the chain concerns this app's addresses. Stopping the node to start it again past the history check...")
 		if !c.StopWithin(20 * time.Second) {
-			c.progressf("The node did not stop cleanly; the program exits and starts again.")
+			c.progressf("The node did not stop cleanly; its process is ended.")
 		}
 		return ErrRestartRequired
 	}
@@ -870,9 +870,9 @@ func (c *Core) findLaterFunds(ctx context.Context, report func(SyncProgress)) er
 	if err := c.mark(addressesExtendedFile); err != nil {
 		return err
 	}
-	c.progressf("Stopping the node; the app restarts to check the history with these addresses...")
+	c.progressf("Stopping the node to start it again and check the history with these addresses...")
 	if !c.StopWithin(20 * time.Second) {
-		c.progressf("The node did not stop cleanly; the program exits and starts again.")
+		c.progressf("The node did not stop cleanly; its process is ended.")
 	}
 	return ErrRestartRequired
 }
@@ -938,7 +938,7 @@ func (c *Core) verifyFound(ctx context.Context) error {
 			return err
 		}
 		if !c.StopWithin(20 * time.Second) {
-			c.progressf("The node did not stop cleanly; the program exits and starts again.")
+			c.progressf("The node did not stop cleanly; its process is ended.")
 		}
 		return ErrRestartRequired
 	}

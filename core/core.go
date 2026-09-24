@@ -530,7 +530,7 @@ func (c *Core) ZipRestore(zipPath, mnemonic string, force bool) error {
 
 // initLibrary prepares the breez app without starting lnd. From then on
 // this process is bound to the backup's folder (boundLibDir): another
-// folder needs a program restart. Called again before Stop, it returns at
+// folder needs a new process. Called again before Stop, it returns at
 // once.
 func (c *Core) initLibrary(svc *services) error {
 	if c.dir() == "" {
@@ -686,12 +686,13 @@ func (c *Core) firstStart(ctx context.Context) error {
 	}
 	// The library's app starts and stops only once (breez/breez app.go)
 	// and a second bindings.Init in one process was never tried, so the
-	// caller restarts the whole program. StopWithin returns once lnd is
-	// down even when the library's Stop has not returned; the program exit
-	// releases whatever is left.
-	c.progressf("Caught up. Stopping the node; the app restarts to continue...")
+	// node starts again in a new process: the app's node helper, or the
+	// CLI run again. StopWithin returns once lnd is down even when the
+	// library's Stop has not returned; the process exit releases whatever
+	// is left.
+	c.progressf("Caught up. Stopping the node to start it again...")
 	if !c.StopWithin(20 * time.Second) {
-		c.progressf("The node did not stop cleanly; the program exits and starts again.")
+		c.progressf("The node did not stop cleanly; its process is ended.")
 	}
 	return ErrRestartRequired
 }
@@ -778,10 +779,10 @@ func stopWithin(stop func(), d time.Duration) bool {
 	}
 }
 
-// ErrRestartRequired is returned by StartNode and WaitSynced when the
-// program must be started again for the node to pick up a change (the
-// first catch-up with the chain, the history shortcut, or a fresh history
-// check, e.g. for addresses found paid after the backup).
+// ErrRestartRequired is returned by StartNode and WaitSynced when the node
+// has stopped and must start again, in a new process, to pick up a change
+// (the first catch-up with the chain, the history shortcut, or a fresh
+// history check, e.g. for addresses found paid after the backup).
 var ErrRestartRequired = errors.New("restart required")
 
 const (
@@ -864,7 +865,7 @@ func (c *Core) WaitSynced(ctx context.Context, onProgress func(SyncProgress)) er
 				return err
 			}
 			if !c.StopWithin(20 * time.Second) {
-				c.progressf("The node did not stop cleanly; the program exits and starts again.")
+				c.progressf("The node did not stop cleanly; its process is ended.")
 			}
 			return ErrRestartRequired
 		}

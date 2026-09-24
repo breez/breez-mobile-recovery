@@ -35,8 +35,7 @@ check it with `sha256sum -c SHA256SUMS`.
 3. **Sync.** The restored app catches up with the bitcoin chain, looks for
    funds received after the last backup and checks its history, with
    progress and a time estimate. The first sync of an old app takes a
-   while: one from 2019 took 90 minutes. The app restarts itself along the
-   way.
+   while: one from 2019 took 90 minutes.
 4. **Your funds.** Three numbers: In channels, Pending, On-chain. **History**
    lists every payment, deposit, withdrawal and channel close, and exports
    as CSV.

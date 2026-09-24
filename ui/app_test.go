@@ -5,77 +5,52 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
-
-	wruntime "github.com/wailsapp/wails/v2/pkg/runtime"
 )
 
-// The relaunched window goes back where the old one was, unless that spot
-// is off the screen it now opens on (the old window was on another one).
-func TestRelaunchWindowPlace(t *testing.T) {
-	t.Setenv(windowEnv, "200,150,1100,760")
-	x, y, w, h, ok := relaunchWindow()
-	if !ok || x != 200 || y != 150 || w != 1100 || h != 760 {
-		t.Fatalf("got %d,%d,%d,%d %v", x, y, w, h, ok)
-	}
-	for _, bad := range []string{"", "200,150", "200,150,0,760", "a,b,c,d"} {
-		t.Setenv(windowEnv, bad)
-		if _, _, _, _, ok := relaunchWindow(); ok {
-			t.Errorf("%q read as a window place", bad)
-		}
-	}
-
-	screen := func(current bool) wruntime.Screen {
-		s := wruntime.Screen{IsCurrent: current}
-		s.Size.Width, s.Size.Height = 1512, 945
-		return s
-	}
-	screens := []wruntime.Screen{screen(false), screen(true)}
-	for _, c := range []struct {
-		x, y int
-		fits bool
-	}{{200, 150, true}, {412, 185, true}, {413, 150, false}, {-10, 150, false}, {200, 186, false}, {2000, 150, false}} {
-		if got := fitsScreen(screens, c.x, c.y, 1100, 760); got != c.fits {
-			t.Errorf("at %d,%d: fits %v, want %v", c.x, c.y, got, c.fits)
-		}
-	}
-	if fitsScreen(nil, 0, 0, 1100, 760) {
-		t.Error("fits with no screen known")
-	}
-}
-
-// The restarted copy gets the current settings, not the ones it was
+// The helper gets the current settings, not the ones the window was
 // started with, and keeps the rest of the environment.
 func TestWithEnvReplaces(t *testing.T) {
-	got := withEnv([]string{"HOME=/h", "BREEZ_RECOVERY_WORKDIR=/old", "BREEZ_RECOVERY_RELAUNCH=continue", "PATH=/p"},
-		"BREEZ_RECOVERY_RELAUNCH=restore-other", "BREEZ_RECOVERY_WORKDIR=/new", "BREEZ_RECOVERY_PEERS=")
-	want := []string{"HOME=/h", "PATH=/p", "BREEZ_RECOVERY_RELAUNCH=restore-other", "BREEZ_RECOVERY_WORKDIR=/new", "BREEZ_RECOVERY_PEERS="}
+	got := withEnv([]string{"HOME=/h", "BREEZ_RECOVERY_WORKDIR=/old", "BREEZ_RECOVERY_NODE_HELPER=a", "PATH=/p"},
+		"BREEZ_RECOVERY_NODE_HELPER=b", "BREEZ_RECOVERY_WORKDIR=/new", "BREEZ_RECOVERY_PEERS=")
+	want := []string{"HOME=/h", "PATH=/p", "BREEZ_RECOVERY_NODE_HELPER=b", "BREEZ_RECOVERY_WORKDIR=/new", "BREEZ_RECOVERY_PEERS="}
 	if strings.Join(got, " ") != strings.Join(want, " ") {
 		t.Errorf("got %q\nwant %q", got, want)
 	}
 }
 
-// A restart keeps the log: the new copy shows the old copy's lines first,
-// once, and never more than its limit.
-func TestLogCarriesOverRestart(t *testing.T) {
-	path := filepath.Join(t.TempDir(), restartLogFile)
-	old := newLogBuffer(10)
-	old.add("restoring")
-	old.add("restarting the app")
-	if err := old.save(path); err != nil {
+// A backup's log is appended to its recovery.log, and the page is told
+// to empty its panel; lines waiting to go out are not sent after that.
+func TestLogMovesToItsBackup(t *testing.T) {
+	path := filepath.Join(t.TempDir(), backupLogFile)
+	var sent []string
+	l := newLogBuffer(10)
+	l.emit = func(name string, data ...interface{}) { sent = append(sent, name) }
+	for _, session := range []string{"first", "second"} {
+		l.add(session + " restore")
+		if err := l.moveTo(path); err != nil {
+			t.Fatal(err)
+		}
+		l.flush()
+		if got := l.text(); got != "\n" {
+			t.Errorf("log after the move: %q", got)
+		}
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
 		t.Fatal(err)
 	}
-	cur := newLogBuffer(3)
-	cur.add("Breez Recovery dev")
-	cur.load(path)
-	if got := strings.Join(cur.lines, "|"); got != "restoring|restarting the app|Breez Recovery dev" {
-		t.Errorf("lines %q", got)
+	if strings.Count(string(data), "=====") != 2 || strings.Index(string(data), "first restore") > strings.Index(string(data), "second restore") {
+		t.Errorf("recovery.log:\n%s", data)
 	}
-	if _, err := os.Stat(path); !os.IsNotExist(err) {
-		t.Errorf("the carried log was not removed: %v", err)
+	if strings.Join(sent, ",") != "logreset,logreset" {
+		t.Errorf("events %q", sent)
 	}
-	cur.load(path) // nothing left to load
-	cur.add("synced")
-	if got := strings.Join(cur.lines, "|"); got != "restarting the app|Breez Recovery dev|synced" {
-		t.Errorf("after the limit: %q", got)
+	// A failed write keeps the lines.
+	l.add("kept")
+	if err := l.moveTo(filepath.Join(t.TempDir(), "missing", backupLogFile)); err == nil {
+		t.Fatal("write to a missing folder succeeded")
+	}
+	if !strings.Contains(l.text(), "kept") {
+		t.Error("lines dropped on a failed write")
 	}
 }

@@ -29,6 +29,7 @@
     useName: "",          // restored backup picked on the start screen
     currentName: "",      // restored backup in use
     restored: new Set(),  // names (node ids) of the backups restored here
+    nodeStopped: false,   // the node stopped by itself; Continue recovery starts it
   };
 
   // ---------------------------------------------------------------- helpers
@@ -51,6 +52,9 @@
     return e.message || String(e);
   }
   function isCancel(e) { return /cancelled|context canceled/i.test(errMsg(e)); }
+  // The node is gone (it crashed, or was never started): the calls that
+  // need it cannot work until Continue recovery starts it.
+  function isNodeGone(e) { return /the node stopped unexpectedly|the node is not running/i.test(errMsg(e)); }
 
   function fmtSat(n) {
     n = Number(n || 0);
@@ -117,6 +121,11 @@
     ui.logCount += lines.length;
     $("#log-count").textContent = ui.logCount > 9999 ? "9999+" : String(ui.logCount);
     if (atBottom) logLines.scrollTop = logLines.scrollHeight;
+  }
+  function clearLog() {
+    logLines.textContent = "";
+    ui.logCount = 0;
+    $("#log-count").textContent = "0";
   }
   function toggleLog(open) {
     ui.logOpen = open == null ? !ui.logOpen : open;
@@ -197,9 +206,11 @@
 
   async function applySettings() {
     try {
+      // A running node stops first, which shows while it takes.
       ui.state = await api.ApplySettings({ workDir: $("#workdir").value, peers: $("#peers").value });
       await refreshState();
     } catch (e) { showError(errMsg(e)); }
+    show("welcome");
   }
 
   // ---------------------------------------------------------------- source and sign in
@@ -455,6 +466,7 @@
   }
 
   async function startSync() {
+    ui.nodeStopped = false;
     resetSync();
     show("sync");
     setBusy(true);
@@ -464,12 +476,27 @@
       renderWallet();
       show("wallet");
     } catch (e) {
-      // The app relaunches itself and quits: no error, no welcome screen.
-      if (/restart required/.test(errMsg(e))) { working("Restarting", false); return; }
       await refreshState();
       show("welcome");
       if (!isCancel(e)) showError(errMsg(e));
     } finally { setBusy(false); }
+  }
+
+  // The node stopped by itself. The screens that need it go back to the
+  // funds, which offer to start it again.
+  function nodeStopped(msg) {
+    ui.nodeStopped = true;
+    if (["wallet", "history", "sweep", "done"].includes(ui.screen)) {
+      resetSweep();
+      renderWallet();
+      show("wallet");
+    }
+    showError(msg);
+  }
+  // A call that needs the node failed.
+  function nodeError(e) {
+    if (isNodeGone(e)) nodeStopped(errMsg(e));
+    else showError(errMsg(e));
   }
 
   // ---------------------------------------------------------------- wallet
@@ -489,10 +516,13 @@
     const hasOnchain = st.onchainConfirmed > 0;
     $("#btn-copy-channels").classList.toggle("hidden", !hasChannels);
     $("#btn-copy-channels").textContent = "Copy the list";
-    $("#btn-sweep").classList.toggle("hidden", !hasOnchain);
+    $("#btn-sweep").classList.toggle("hidden", !hasOnchain || ui.nodeStopped);
+    $("#btn-continue").classList.toggle("hidden", !ui.nodeStopped);
 
     let advice;
-    if (hasChannels) {
+    if (ui.nodeStopped) {
+      advice = "The node is not running.";
+    } else if (hasChannels) {
       advice = "Channels still open. Email the list to contact@breez.technology.";
     } else if ((st.closedOnChain || []).some((c) => c.collect > 0)) {
       advice = "Collecting funds from a closed channel. Keep the app open.";
@@ -572,19 +602,20 @@
       ui.status = await api.GetStatus();
       renderWallet();
       show("wallet");
-    } catch (e) { showError(errMsg(e)); }
+    } catch (e) { nodeError(e); }
     finally { setBusy(false); }
   }
 
   // While money is on its way (a closed channel being collected, a close
   // maturing, an unconfirmed balance) the funds screen keeps itself current,
-  // quietly: no busy state, and errors wait for the next manual refresh.
+  // quietly: no busy state, and errors wait for the next manual refresh,
+  // except that the node is gone.
   function isMoving(st) {
     return !!st && !!(st.pending.length || st.unresolved || st.outgoing || st.onchainUnconfirmed > 0 || (st.closedOnChain || []).some((c) => c.collect > 0));
   }
   setInterval(async () => {
-    if (ui.screen !== "wallet" || ui.busy || !isMoving(ui.status)) return;
-    try { ui.status = await api.GetStatus(); if (ui.screen === "wallet") renderWallet(); } catch (e) { /* next round */ }
+    if (ui.screen !== "wallet" || ui.busy || ui.nodeStopped || !isMoving(ui.status)) return;
+    try { ui.status = await api.GetStatus(); if (ui.screen === "wallet") renderWallet(); } catch (e) { if (isNodeGone(e)) nodeStopped(errMsg(e)); }
   }, 30000);
 
   // ---------------------------------------------------------------- history
@@ -607,7 +638,7 @@
       const h = await api.GetHistory();
       renderHistory(h);
       show("history");
-    } catch (e) { showError(errMsg(e)); }
+    } catch (e) { nodeError(e); }
     finally { setBusy(false); }
   }
 
@@ -744,7 +775,7 @@
       $("#btn-prepare-sweep").classList.add("hidden");
       $("#btn-broadcast-sweep").classList.remove("hidden");
       $("#sweep-address").disabled = true;
-    } catch (e) { showError(errMsg(e)); }
+    } catch (e) { nodeError(e); }
     finally { setBusy(false); }
   }
 
@@ -757,7 +788,7 @@
       resetSweep();
       $("#sweep-address").value = "";
       show("done");
-    } catch (e) { showError(errMsg(e)); }
+    } catch (e) { nodeError(e); }
     finally { setBusy(false); }
   }
 
@@ -770,30 +801,32 @@
       if (ui.busy) return; // a second click while switching
       if (ui.useName && ui.useName !== ui.currentName) {
         setBusy(true);
-        let restarting = false;
         try {
-          // After a node ran in this process the app restarts to switch.
-          restarting = await api.UseRestored(ui.useName);
-          if (!restarting) await refreshState();
-        } finally {
-          if (!restarting) setBusy(false);
-        }
-        if (restarting) { working("Restarting", false); return; }
+          // A node running on the backup in use stops first.
+          await api.UseRestored(ui.useName);
+          await refreshState();
+        } catch (e) {
+          await refreshState();
+          show("welcome");
+          throw e;
+        } finally { setBusy(false); }
       }
       startSync();
     },
     "restore-other": async () => {
-      // Each backup has a folder of its own, so nothing is overwritten. When
-      // the node already ran, the app restarts itself and opens on this step.
+      if (ui.busy) return;
+      // Each backup has a folder of its own, so nothing is overwritten. A
+      // running node stops first.
       ui.force = false;
       // Money still on its way moves only while this node runs: ask first.
-      const ask = ui.screen === "done" || (ui.screen === "wallet" && isMoving(ui.status));
+      const ask = !ui.nodeStopped && (ui.screen === "done" || (ui.screen === "wallet" && isMoving(ui.status)));
+      setBusy(true);
       try {
-        if (await api.RestoreOther(ask)) { working("Restarting", false); return; }
+        await api.RestoreOther(ask);
       } catch (e) {
         if (isCancel(e)) return; // answered No
         throw e;
-      }
+      } finally { setBusy(false); }
       show("source");
     },
     "back-welcome": async () => { await refreshState(); show("welcome"); },
@@ -864,10 +897,13 @@
 
   function bindEvents() {
     rt.EventsOn("log", (lines) => appendLog(Array.isArray(lines) ? lines : [String(lines)]));
+    // The log so far went to the folder of the backup left.
+    rt.EventsOn("logreset", clearLog);
     rt.EventsOn("progress", (msg) => pushRecent(String(msg)));
     rt.EventsOn("sync", onSync);
-    // Sent before the node stops, which takes a while.
-    rt.EventsOn("restarting", () => { working("Restarting", false); setBusy(true); });
+    // Sent before a running node stops, which can take a while.
+    rt.EventsOn("stopping", () => working("Stopping the node", false));
+    rt.EventsOn("nodestopped", (msg) => nodeStopped(String(msg)));
     rt.EventsOn("signin", (info) => {
       $("#signin-url").value = info.url;
       $("#signin-link").classList.remove("hidden");
@@ -889,22 +925,7 @@
     const existing = await api.GetLog();
     if (existing && existing.length) appendLog(existing);
     await refreshState();
-    if (ui.state.autoContinue) {
-      working("Restarting", false);
-      pushRecent("Continuing after the restart...");
-    } else {
-      show(ui.state.restoreOther ? "source" : "welcome");
-    }
-    if (ui.state.switchError) showError(ui.state.switchError);
-    // A relaunched copy starts hidden: show it now, on the right screen.
-    api.ShowWindow();
-    if (ui.state.autoContinue) {
-      // Relaunched by the app itself to carry on: after preparing the node,
-      // or to switch to another restored backup. This copy only got this far
-      // once the old one had exited: core.New waits for the work folder
-      // lock, which the old copy held to the end.
-      startSync();
-    }
+    show("welcome");
   }
 
   boot();

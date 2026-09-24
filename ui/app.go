@@ -10,7 +10,6 @@ import (
 	"runtime"
 	"strings"
 	"sync"
-	"sync/atomic"
 	"time"
 
 	"github.com/breez/breez-mobile-recovery/core"
@@ -22,8 +21,17 @@ var version = "dev"
 
 // App is the object bound to the frontend. Every exported method is
 // callable from JavaScript as window.go.main.App.<Method>.
+//
+// The node does not run in this process: it runs in a node helper, a child
+// process of this program (helper.go, nodeproc.go), and every call that
+// needs it goes there. The library it runs starts only once per process and
+// stays bound to its first backup folder, so each new start of the node is
+// a new helper, and the window stays.
 type App struct {
 	ctx context.Context
+
+	emitMu sync.Mutex
+	emitFn func(name string, data ...interface{}) // set once the window runs
 
 	opMu     sync.Mutex // one long operation at a time
 	cancelMu sync.Mutex
@@ -34,56 +42,74 @@ type App struct {
 	core   *core.Core
 
 	log *logBuffer
+	// logDir is the backup folder the log is about, "" for none yet. Only
+	// with opMu held.
+	logDir string
 
 	historyMu   sync.Mutex
 	lastHistory *core.History // what the History screen shows, for export
 
-	showOnce sync.Once // ShowWindow
+	nodeMu sync.Mutex
+	node   *nodeProc // the running helper, nil when none
+	// syncFailed: the last sync ended with an error, and the node may be
+	// half started; the next sync starts a new helper. Only with opMu held.
+	syncFailed bool
+	// newHelper makes the command of a helper; tests run a fake one.
+	newHelper            func(name string, cfg core.Config) (*exec.Cmd, error)
+	stopWait, cancelWait time.Duration
 
-	relaunching atomic.Bool // a new copy is on its way; never start two
-	switchErr   string      // why the switch this copy was started for failed
+	syncMu   sync.Mutex
+	syncing  bool               // a sync call runs
+	lastSync *core.SyncProgress // the helper's last sync report, nil before its first
 }
 
 func newApp() *App {
-	a := &App{cfg: core.DefaultConfig(), log: newLogBuffer(20000)}
+	a := &App{cfg: core.DefaultConfig(), log: newLogBuffer(20000),
+		newHelper: helperCommand, stopWait: helperStopTimeout, cancelWait: helperCancelTimeout}
 	a.core = core.New(a.cfg, &reporter{app: a})
-	// Restarted by the app itself: the log so far comes along. core.New
-	// returned, so this copy holds the work folder and the old one, which
-	// writes the file just before it exits, is gone.
-	if os.Getenv(relaunchEnv) != "" {
-		a.log.load(filepath.Join(a.cfg.WorkDir, restartLogFile))
-	}
-	// Restarted by UseRestored to continue with another restored backup:
-	// switch before the page asks what is in use.
-	if name, ok := strings.CutPrefix(os.Getenv(relaunchEnv), "use:"); ok {
-		if err := a.core.UseBackup(name); err != nil {
-			a.switchErr = "could not switch to the restored backup: " + err.Error()
-			a.log.tool(a.switchErr)
-		}
-	}
+	a.logDir = a.core.NodeDir()
 	return a
 }
 
 func (a *App) startup(ctx context.Context) {
 	a.ctx = ctx
-	a.log.start(ctx)
+	a.emitMu.Lock()
+	a.emitFn = func(name string, data ...interface{}) { wruntime.EventsEmit(ctx, name, data...) }
+	a.emitMu.Unlock()
+	a.log.start(ctx, a.emit)
+	a.logHeader()
+}
+
+// emit sends an event to the page, once there is one.
+func (a *App) emit(name string, data ...interface{}) {
+	a.emitMu.Lock()
+	f := a.emitFn
+	a.emitMu.Unlock()
+	if f != nil {
+		f(name, data...)
+	}
+}
+
+// progress is a line for the log and the page.
+func (a *App) progress(msg string) {
+	a.log.tool(msg)
+	a.emit("progress", msg)
+}
+
+// logHeader starts the log of a session or of a backup.
+func (a *App) logHeader() {
 	a.log.tool(fmt.Sprintf("Breez Recovery %s on %s/%s", version, runtime.GOOS, runtime.GOARCH))
-	a.log.tool("Work dir: " + a.cfg.WorkDir)
-	// A relaunched copy starts hidden: never leave it that way, even if
-	// the page fails to ask for the window.
-	time.AfterFunc(5*time.Second, a.ShowWindow)
+	a.log.tool("Work dir: " + a.c().Config().WorkDir)
 }
 
 func (a *App) beforeClose(ctx context.Context) bool {
-	a.coreMu.Lock()
-	c := a.core
-	a.coreMu.Unlock()
+	busy := !a.opMu.TryLock()
+	if !busy {
+		a.opMu.Unlock()
+	}
 	// Closing mid-way stops the node. Ask first while something runs, so
 	// a stray click on the window controls does not end a long sync.
-	if !a.opMu.TryLock() || c.NodeRunning() {
-		if a.opMu.TryLock() {
-			a.opMu.Unlock()
-		}
+	if busy || a.runningHelper() != nil {
 		answer, err := wruntime.MessageDialog(ctx, wruntime.MessageDialogOptions{
 			Type:          wruntime.QuestionDialog,
 			Title:         "Close Breez Recovery?",
@@ -97,12 +123,15 @@ func (a *App) beforeClose(ctx context.Context) bool {
 		if err != nil || (answer != "Yes" && answer != "Close" && answer != "Ok") {
 			return true
 		}
-	} else {
-		a.opMu.Unlock()
 	}
 	a.cancelCurrent()
-	// Returns once lnd is down: the library's Stop can hang after that.
-	c.StopWithin(15 * time.Second)
+	// The call that ran returns first: a broadcast is never cut short, and
+	// a cancelled call ends within helperCancelTimeout.
+	a.opMu.Lock()
+	defer a.opMu.Unlock()
+	a.stopHelper(true)
+	// The log stays with the backup.
+	a.logFor("")
 	return false
 }
 
@@ -110,19 +139,14 @@ func (a *App) beforeClose(ctx context.Context) bool {
 
 type reporter struct{ app *App }
 
-func (r *reporter) Progress(msg string) {
-	r.app.log.tool(msg)
-	// The core can report before the window exists (it tidies the work
-	// folder when it is created); the log keeps the line.
-	if r.app.ctx != nil {
-		wruntime.EventsEmit(r.app.ctx, "progress", msg)
-	}
-}
+// Progress: the core can report before the window exists (it tidies the
+// work folder when it is created); the log keeps the line.
+func (r *reporter) Progress(msg string) { r.app.progress(msg) }
 
 func (r *reporter) NodeLog(line string) { r.app.log.node(line) }
 
 func (r *reporter) SignIn(provider, url string) {
-	wruntime.EventsEmit(r.app.ctx, "signin", map[string]string{"provider": provider, "url": url})
+	r.app.emit("signin", map[string]string{"provider": provider, "url": url})
 }
 
 // ---- log buffer -------------------------------------------------------------
@@ -134,14 +158,14 @@ type logBuffer struct {
 	lines   []string
 	max     int
 	pending []string
-	ctx     context.Context
+	emit    func(name string, data ...interface{})
 }
 
 func newLogBuffer(max int) *logBuffer { return &logBuffer{max: max} }
 
-func (l *logBuffer) start(ctx context.Context) {
+func (l *logBuffer) start(ctx context.Context, emit func(name string, data ...interface{})) {
 	l.mu.Lock()
-	l.ctx = ctx
+	l.emit = emit
 	l.mu.Unlock()
 	go func() {
 		t := time.NewTicker(250 * time.Millisecond)
@@ -157,25 +181,25 @@ func (l *logBuffer) start(ctx context.Context) {
 	}()
 }
 
+// flush sends the lines not sent yet. Under the lock, so a reset cannot
+// come between taking the lines and sending them.
 func (l *logBuffer) flush() {
 	l.mu.Lock()
-	batch := l.pending
-	l.pending = nil
-	ctx := l.ctx
-	l.mu.Unlock()
-	if len(batch) > 0 && ctx != nil {
-		wruntime.EventsEmit(ctx, "log", batch)
+	defer l.mu.Unlock()
+	if len(l.pending) > 0 && l.emit != nil {
+		l.emit("log", l.pending)
 	}
+	l.pending = nil
 }
 
-func (l *logBuffer) add(line string) {
+func (l *logBuffer) add(lines ...string) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
-	l.lines = append(l.lines, line)
+	l.lines = append(l.lines, lines...)
 	if len(l.lines) > l.max {
 		l.lines = l.lines[len(l.lines)-l.max:]
 	}
-	l.pending = append(l.pending, line)
+	l.pending = append(l.pending, lines...)
 }
 
 func (l *logBuffer) tool(msg string) { l.add(toolLine(msg)) }
@@ -189,34 +213,30 @@ func (l *logBuffer) node(line string) {
 	l.add(line)
 }
 
-// restartLogFile carries the log from a copy of the program to the one it
-// starts in its place, so the Logs panel and Save log cover the whole
-// restore and not only the last start.
-const restartLogFile = "restart.log"
+// backupLogFile is the log of every session of a backup, in its folder.
+const backupLogFile = "recovery.log"
 
-// save writes every line to path, for the copy started in this one's place.
-func (l *logBuffer) save(path string) error {
-	return os.WriteFile(path, []byte(l.text()), 0600)
-}
-
-// load puts the lines a previous copy saved before this copy's own, and
-// removes the file so a later start does not show them again.
-func (l *logBuffer) load(path string) {
-	data, err := os.ReadFile(path)
-	if err != nil {
-		return
-	}
-	os.Remove(path)
-	text := strings.TrimRight(string(data), "\n")
-	if text == "" {
-		return
-	}
+// moveTo appends every line to the file at path, empties the log and tells
+// the page to empty its panel. On a failed write nothing is emptied.
+func (l *logBuffer) moveTo(path string) error {
 	l.mu.Lock()
 	defer l.mu.Unlock()
-	l.lines = append(strings.Split(text, "\n"), l.lines...)
-	if len(l.lines) > l.max {
-		l.lines = l.lines[len(l.lines)-l.max:]
+	f, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_APPEND, 0600)
+	if err != nil {
+		return err
 	}
+	_, err = f.WriteString("===== " + time.Now().Format(time.RFC3339) + "\n" + strings.Join(l.lines, "\n") + "\n")
+	if cerr := f.Close(); err == nil {
+		err = cerr
+	}
+	if err != nil {
+		return err
+	}
+	l.lines, l.pending = nil, nil
+	if l.emit != nil {
+		l.emit("logreset")
+	}
+	return nil
 }
 
 func (l *logBuffer) text() string {
@@ -233,6 +253,27 @@ func (l *logBuffer) snapshot() []string {
 	defer l.mu.Unlock()
 	l.pending = nil
 	return append([]string(nil), l.lines...)
+}
+
+// logFor makes the log the one of the backup folder dir, "" for none yet.
+// The lines so far are about the backup in use before; when that was
+// another one they go to its recovery.log and the log starts again. It
+// reports whether it did. Only with opMu held.
+func (a *App) logFor(dir string) bool {
+	if a.logDir == dir {
+		return false
+	}
+	old := a.logDir
+	a.logDir = dir
+	if old == "" {
+		return false // the lines so far lead up to this backup
+	}
+	if err := a.log.moveTo(filepath.Join(old, backupLogFile)); err != nil {
+		a.log.tool("the log could not be kept with its backup: " + err.Error())
+		return false
+	}
+	a.logHeader()
+	return true
 }
 
 // ---- operations -------------------------------------------------------------
@@ -261,10 +302,7 @@ func (a *App) run(name string, fn func(ctx context.Context) error) error {
 		if errors.Is(err, context.Canceled) {
 			err = errors.New("cancelled")
 		}
-		// A planned restart is not an error; relaunch logs it.
-		if !errors.Is(err, core.ErrRestartRequired) {
-			a.log.tool("error: " + err.Error())
-		}
+		a.log.tool("error: " + err.Error())
 	}
 	return err
 }
@@ -297,9 +335,6 @@ type State struct {
 	NodeDir          string `json:"nodeDir"` // folder of the backup in use
 	Peers            string `json:"peers"`
 	HasNode          bool   `json:"hasNode"`
-	RestoreOther     bool   `json:"restoreOther"` // set after a self-restart: go straight to choosing a backup
-	AutoContinue     bool   `json:"autoContinue"` // set after a self-restart: go straight to sync
-	SwitchError      string `json:"switchError"`  // a restart to another restored backup that failed
 	LogPath          string `json:"logPath"`
 	GoogleConfigured bool   `json:"googleConfigured"`
 }
@@ -309,32 +344,26 @@ func (a *App) GetState() State {
 	c := a.c()
 	cfg := c.Config()
 	return State{
-		Version:      version,
-		OS:           runtime.GOOS,
-		WorkDir:      cfg.WorkDir,
-		NodeDir:      c.NodeDir(),
-		Peers:        cfg.Peers,
-		HasNode:      c.HasRestoredNode(),
-		RestoreOther: os.Getenv(relaunchEnv) == "restore-other",
-		// A restart to another restored backup carries on with it, as the
-		// Continue recovery press that caused it asked.
-		AutoContinue: (os.Getenv(relaunchEnv) == "continue" || (strings.HasPrefix(os.Getenv(relaunchEnv), "use:") && a.switchErr == "")) &&
-			c.HasRestoredNode(),
-		SwitchError:      a.switchErr,
+		Version:          version,
+		OS:               runtime.GOOS,
+		WorkDir:          cfg.WorkDir,
+		NodeDir:          c.NodeDir(),
+		Peers:            cfg.Peers,
+		HasNode:          c.HasRestoredNode(),
 		LogPath:          c.LogPath(),
 		GoogleConfigured: cfg.GoogleClientID != "",
 	}
 }
 
-// Settings are the advanced options a user can change until a node starts
-// in this process.
+// Settings are the advanced options: the work folder and the bitcoin peers.
 type Settings struct {
 	WorkDir string `json:"workDir"`
 	Peers   string `json:"peers"`
 }
 
-// ApplySettings replaces the session configuration. It refuses while an
-// operation runs or once a node was started in this process.
+// ApplySettings replaces the session configuration. A running node stops
+// first: it runs with the settings it was started with. It refuses while an
+// operation runs.
 func (a *App) ApplySettings(s Settings) (State, error) {
 	if !a.opMu.TryLock() {
 		return State{}, errBusy
@@ -343,19 +372,16 @@ func (a *App) ApplySettings(s Settings) (State, error) {
 	if strings.TrimSpace(s.WorkDir) == "" {
 		return State{}, errors.New("the work folder cannot be empty")
 	}
-	// Once the library ran in this process, the process stays bound to
-	// that backup folder and those peers (the library reads its config and
-	// opens its log once per process, see CLAUDE.md): settings change
-	// before a node was started, or after a restart.
-	if a.c().LibraryBound() {
-		return State{}, errors.New("close and reopen the app to change these settings: the node already ran in this session")
-	}
+	a.stopHelper(true)
 	a.coreMu.Lock()
 	a.cfg.WorkDir = strings.TrimSpace(s.WorkDir)
 	a.cfg.Peers = strings.TrimSpace(s.Peers)
 	a.core = core.New(a.cfg, &reporter{app: a})
 	a.coreMu.Unlock()
-	a.log.tool("Work dir: " + a.cfg.WorkDir)
+	// Another work folder has another backup in use, or none.
+	if !a.logFor(a.c().NodeDir()) {
+		a.log.tool("Work dir: " + a.cfg.WorkDir)
+	}
 	if a.cfg.Peers != "" {
 		a.log.tool("Bitcoin peers pinned: " + a.cfg.Peers)
 	}
@@ -456,50 +482,59 @@ func (a *App) Restore(req RestoreRequest) error {
 		if err != nil {
 			return err
 		}
-		if c.IsRestored(name) && !req.Force {
-			// Linux shows its own Yes/No buttons whatever labels are
-			// passed, so the question is a yes/no one.
-			answer, err := wruntime.MessageDialog(a.ctx, wruntime.MessageDialogOptions{
-				Type:          wruntime.QuestionDialog,
-				Title:         "Already restored",
-				Message:       "Already restored here. Continue with it?\n\nNo restores it again.",
-				Buttons:       []string{"Yes", "No"},
-				DefaultButton: "Yes",
-			})
-			if err != nil {
-				return err
-			}
-			switch answer {
-			case "Yes", "Ok":
-				return c.UseBackup(name)
-			case "No":
-				req.Force = true
-			default:
-				return errors.New("restore cancelled")
-			}
+		// Its folder may be the one restored again, and a restore is
+		// refused while a node runs.
+		a.stopHelper(false)
+		if a.logDir != "" && filepath.Base(a.logDir) != name {
+			a.logFor("")
 		}
-		switch req.Source {
-		case "google":
-			return c.GoogleRestore(ctx, req.NodeID, req.Phrase, req.Force)
-		case "icloud":
-			return c.ICloudRestore(ctx, req.NodeID, req.Phrase, req.Force)
-		case "zip":
-			return c.ZipRestore(req.ZipPath, req.Phrase, req.Force)
+		if err := a.restore(ctx, c, name, req); err != nil {
+			return err
 		}
-		return fmt.Errorf("unknown source %q", req.Source)
+		a.logFor(c.NodeDir())
+		return nil
 	})
 }
 
-// RestoreOther prepares for restoring a different backup. The breez
-// library stays bound to the first backup folder it ran on, so when it
-// already runs in this process the app starts again and opens on the
-// backup sources. It reports whether it is restarting. ask: money of this
-// app is still on its way, which moves only while it runs; confirm first.
-func (a *App) RestoreOther(ask bool) (bool, error) {
-	c := a.c()
-	if !c.LibraryBound() {
-		return false, nil
+func (a *App) restore(ctx context.Context, c *core.Core, name string, req RestoreRequest) error {
+	if c.IsRestored(name) && !req.Force {
+		// Linux shows its own Yes/No buttons whatever labels are
+		// passed, so the question is a yes/no one.
+		answer, err := wruntime.MessageDialog(a.ctx, wruntime.MessageDialogOptions{
+			Type:          wruntime.QuestionDialog,
+			Title:         "Already restored",
+			Message:       "Already restored here. Continue with it?\n\nNo restores it again.",
+			Buttons:       []string{"Yes", "No"},
+			DefaultButton: "Yes",
+		})
+		if err != nil {
+			return err
+		}
+		switch answer {
+		case "Yes", "Ok":
+			return c.UseBackup(name)
+		case "No":
+			req.Force = true
+		default:
+			return errors.New("restore cancelled")
+		}
 	}
+	switch req.Source {
+	case "google":
+		return c.GoogleRestore(ctx, req.NodeID, req.Phrase, req.Force)
+	case "icloud":
+		return c.ICloudRestore(ctx, req.NodeID, req.Phrase, req.Force)
+	case "zip":
+		return c.ZipRestore(req.ZipPath, req.Phrase, req.Force)
+	}
+	return fmt.Errorf("unknown source %q", req.Source)
+}
+
+// RestoreOther prepares for restoring a different backup: a node running on
+// the backup in use stops, and the log so far goes to that backup's folder.
+// ask: money of this app is still on its way, which moves only while it
+// runs; confirm first.
+func (a *App) RestoreOther(ask bool) error {
 	if ask {
 		answer, err := wruntime.MessageDialog(a.ctx, wruntime.MessageDialogOptions{
 			Type:          wruntime.QuestionDialog,
@@ -510,88 +545,227 @@ func (a *App) RestoreOther(ask bool) (bool, error) {
 			CancelButton:  "No",
 		})
 		if err != nil {
-			return false, err
+			return err
 		}
 		if answer != "Yes" && answer != "Ok" {
-			return false, errors.New("restore another backup cancelled")
+			return errors.New("restore another backup cancelled")
 		}
 	}
 	// Wait out a status refresh or a history load instead of refusing.
 	a.opMu.Lock()
 	defer a.opMu.Unlock()
-	// Stopping the node takes a while: the page says so now.
-	wruntime.EventsEmit(a.ctx, "restarting")
-	a.log.tool("stopping the node to restore a different backup")
-	if !c.StopWithin(20 * time.Second) {
-		a.log.tool("the node did not stop cleanly; the program exits and starts again")
-	}
-	if !a.relaunch("restore-other") {
-		return false, errRelaunchFailed
-	}
-	return true, nil
+	a.stopHelper(true)
+	a.logFor("")
+	return nil
 }
 
 // RestoredApps lists the backups restored on this computer.
 func (a *App) RestoredApps() []core.RestoredBackup { return a.c().RestoredBackups() }
 
-// UseRestored continues with another backup restored on this computer.
-// Before a node ran in this process it switches at once; after, the app
-// restarts with that backup in use and carries on syncing it, and reports
-// true. A switch that fails after the restart shows its error on the start
-// screen.
-func (a *App) UseRestored(name string) (bool, error) {
-	c := a.c()
-	if !c.LibraryBound() {
-		if !a.opMu.TryLock() {
-			return false, errBusy
-		}
-		defer a.opMu.Unlock()
-		return false, c.UseBackup(name)
-	}
-	if !c.IsRestored(name) {
-		return false, fmt.Errorf("no restored backup %q", name)
-	}
+// UseRestored continues with another backup restored on this computer. A
+// node running on the backup in use stops first.
+func (a *App) UseRestored(name string) error {
 	a.opMu.Lock()
 	defer a.opMu.Unlock()
-	wruntime.EventsEmit(a.ctx, "restarting")
-	a.log.tool("stopping the node to continue with another restored backup")
-	if !c.StopWithin(20 * time.Second) {
-		a.log.tool("the node did not stop cleanly; the program exits and starts again")
+	c := a.c()
+	if !c.IsRestored(name) {
+		return fmt.Errorf("no restored backup %q", name)
 	}
-	if !a.relaunch("use:" + name) {
-		return false, errRelaunchFailed
+	if name != c.CurrentBackup() {
+		a.stopHelper(true)
+		a.logFor("")
+		if err := c.UseBackup(name); err != nil {
+			return err
+		}
 	}
-	return true, nil
+	a.logFor(c.NodeDir())
+	return nil
 }
 
 // StartAndSync starts the node, waits for chain sync (emitting "sync"
-// events) and returns the wallet status.
+// events) and returns the wallet status. When the node has to start again
+// for a change (see core.ErrRestartRequired) its helper exits and a new one
+// carries on, up to maxNodeRestarts times in a row.
 func (a *App) StartAndSync() (*core.Status, error) {
 	var st *core.Status
 	err := a.run("start node and sync", func(ctx context.Context) error {
+		a.logFor(a.c().NodeDir())
 		var err error
-		st, err = syncNode(ctx, a.c(), a.log.tool, func(p core.SyncProgress) {
-			wruntime.EventsEmit(a.ctx, "sync", p)
-		})
-		if errors.Is(err, core.ErrRestartRequired) && !a.relaunch("continue") {
-			return errRelaunchFailed
-		}
+		st, err = a.syncOnHelper(ctx)
+		// A failed start can leave the node half started, and its library
+		// starts only once per process.
+		a.syncFailed = err != nil && !errors.Is(err, context.Canceled)
 		return err
 	})
 	return st, err
 }
 
-// relaunchEnv tells a copy of the program started by relaunch what to do
-// first: "continue" the sync, open on the backup sources ("restore-other"),
-// or switch to another restored backup and continue its sync
-// ("use:<name>").
-const relaunchEnv = "BREEZ_RECOVERY_RELAUNCH"
+func (a *App) syncOnHelper(ctx context.Context) (*core.Status, error) {
+	a.syncMu.Lock()
+	a.syncing = true
+	a.syncMu.Unlock()
+	defer func() {
+		a.syncMu.Lock()
+		a.syncing = false
+		a.syncMu.Unlock()
+	}()
+	for restarts := 0; ; restarts++ {
+		p := a.runningHelper()
+		if p != nil && (a.syncFailed || p.dir != a.c().NodeDir()) {
+			a.syncStep("Stopping the node to start it again...")
+			a.stopHelper(false)
+			p = nil
+		}
+		if p == nil {
+			var err error
+			if p, err = a.startHelper(); err != nil {
+				return nil, err
+			}
+		}
+		m, err := p.call(ctx, helperRequest{Call: callStartAndSync}, a.cancelWait, a.log.tool)
+		if !errors.Is(err, core.ErrRestartRequired) {
+			return m.Status, err
+		}
+		// Core has stopped the node, and the helper exits by itself.
+		p.await(a.stopWait, a.log.tool)
+		if restarts == maxNodeRestarts {
+			return nil, fmt.Errorf("the node asked to start again %d times in a row; Save log has the details", maxNodeRestarts+1)
+		}
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
+		a.log.tool("The node starts again.")
+		a.syncStep("Starting the node again...")
+	}
+}
 
-// windowEnv hands the window's place and size ("x,y,w,h") to the copy
-// started by relaunch. That copy starts hidden and shows its window there,
-// on the screen it continues on, so the restart does not look like a new
-// app opening at the default size in the middle of the screen.
-const windowEnv = "BREEZ_RECOVERY_WINDOW"
+// syncStep shows msg on the sync screen, with the node at its start.
+func (a *App) syncStep(msg string) {
+	a.emit("sync", core.SyncProgress{Stage: "start", Percent: -1, Remaining: -1, Message: msg})
+}
+
+// ---- node helper ---------------------------------------------------------------
+
+// runningHelper is the running helper, nil when none.
+func (a *App) runningHelper() *nodeProc {
+	a.nodeMu.Lock()
+	defer a.nodeMu.Unlock()
+	return a.node
+}
+
+// startHelper starts a helper on the backup in use. Only with opMu held and
+// no helper running.
+func (a *App) startHelper() (*nodeProc, error) {
+	c := a.c()
+	if !c.HasRestoredNode() {
+		return nil, fmt.Errorf("no restored backup in %s", c.Config().WorkDir)
+	}
+	dir := c.NodeDir()
+	cmd, err := a.newHelper(filepath.Base(dir), c.Config())
+	if err != nil {
+		return nil, fmt.Errorf("start the node: %w", err)
+	}
+	// From here on a restore or a switch is refused, and the restored apps
+	// list counts payments from before the node opened its breez.db.
+	core.SetInUse(dir, core.PaymentCount(dir))
+	a.syncMu.Lock()
+	a.lastSync = nil
+	a.syncMu.Unlock()
+	// Held until a.node is set: a helper that dies at once is cleared by
+	// nodeExit only after that.
+	a.nodeMu.Lock()
+	defer a.nodeMu.Unlock()
+	p, err := startNodeProc(cmd, dir, nodeHandlers{event: a.nodeEvent, text: a.log.node, exit: a.nodeExit})
+	if err != nil {
+		core.SetInUse("", 0)
+		return nil, fmt.Errorf("start the node: %w", err)
+	}
+	a.node = p
+	a.syncFailed = false
+	return p, nil
+}
+
+// stopHelper stops the helper, if one runs, and returns once it has exited.
+// page: the page shows that the node is stopping meanwhile.
+func (a *App) stopHelper(page bool) {
+	p := a.runningHelper()
+	if p == nil {
+		return
+	}
+	if page {
+		a.emit("stopping")
+	}
+	a.progress("Stopping the node...")
+	p.stop(a.stopWait, a.log.tool)
+}
+
+// nodeCall sends a call to the running helper.
+func (a *App) nodeCall(ctx context.Context, req helperRequest) (helperMessage, error) {
+	p := a.runningHelper()
+	if p == nil {
+		return helperMessage{}, errNodeNotRunning
+	}
+	return p.call(ctx, req, a.cancelWait, a.log.tool)
+}
+
+// nodeEvent passes on what the helper reports.
+func (a *App) nodeEvent(m helperMessage) {
+	switch m.Event {
+	case eventLog:
+		a.log.add(m.Lines...)
+	case eventProgress:
+		// Already in the log.
+		a.emit("progress", m.Text)
+		// The sync screen shows the sync reports only. Between them, while
+		// the node starts, waits or stops, its lines are what moves.
+		a.syncMu.Lock()
+		p := core.SyncProgress{Stage: "start", Remaining: -1}
+		if a.lastSync != nil {
+			p = *a.lastSync
+		}
+		syncing := a.syncing
+		a.syncMu.Unlock()
+		if syncing {
+			p.Percent = -1
+			p.Message = strings.TrimSpace(m.Text)
+			a.emit("sync", p)
+		}
+	case eventSync:
+		if m.Sync == nil {
+			return
+		}
+		a.syncMu.Lock()
+		p := *m.Sync
+		a.lastSync = &p
+		a.syncMu.Unlock()
+		a.emit("sync", *m.Sync)
+	}
+}
+
+// nodeExit runs once a helper's Wait returned.
+func (a *App) nodeExit(p *nodeProc, err error, planned, waiting bool) {
+	core.SetInUse("", 0)
+	a.nodeMu.Lock()
+	if a.node == p {
+		a.node = nil
+	}
+	a.nodeMu.Unlock()
+	how := ""
+	if err != nil {
+		how = " (" + err.Error() + ")"
+	}
+	if planned {
+		a.log.tool("The node has stopped" + how + ".")
+		return
+	}
+	a.log.tool("The node stopped unexpectedly" + how + ".")
+	// A call waiting for the node fails with this; otherwise the page
+	// learns it here. It does not start again by itself: a node that
+	// crashes on start would crash again and again.
+	if !waiting {
+		a.emit("nodestopped", errNodeCrashed.Error())
+	}
+}
 
 // withEnv returns env with the key=value pairs of set replacing any
 // earlier values of those keys.
@@ -610,110 +784,12 @@ func withEnv(env []string, set ...string) []string {
 	return append(out, set...)
 }
 
-// relaunchWindow reads windowEnv; ok is false on a normal start.
-func relaunchWindow() (x, y, w, h int, ok bool) {
-	_, err := fmt.Sscanf(os.Getenv(windowEnv), "%d,%d,%d,%d", &x, &y, &w, &h)
-	return x, y, w, h, err == nil && w > 0 && h > 0
-}
-
-// ShowWindow shows the hidden window of a relaunched copy once the page
-// shows the screen it continues on. After a normal start the window is
-// already visible and this does nothing.
-func (a *App) ShowWindow() {
-	x, y, w, h, ok := relaunchWindow()
-	if !ok {
-		return
-	}
-	a.showOnce.Do(func() {
-		// A place off this screen (another screen, or a minimised window's
-		// place) keeps the default size too: its size may not fit here.
-		screens, _ := wruntime.ScreenGetAll(a.ctx)
-		if fitsScreen(screens, x, y, w, h) {
-			// WindowSetSize takes the outer size WindowGetSize gave; the
-			// Width/Height options are the inner one, a title bar smaller.
-			wruntime.WindowSetSize(a.ctx, w, h)
-			if runtime.GOOS == "windows" {
-				// ponytail: Windows reads the place in screen coordinates
-				// but sets it from the work area's corner, so it would
-				// drift by a top or left taskbar on each restart; centred
-				// there until a read-back correction is tried on Windows.
-				wruntime.WindowCenter(a.ctx)
-			} else {
-				wruntime.WindowSetPosition(a.ctx, x, y)
-			}
-		} else {
-			wruntime.WindowCenter(a.ctx)
-		}
-		wruntime.WindowShow(a.ctx)
-	})
-}
-
-// fitsScreen reports whether a window at x,y (relative to its screen) of
-// size w,h lies on the current screen. The old window may have been on
-// another screen, where the same offset can be off this one: centre then.
-func fitsScreen(screens []wruntime.Screen, x, y, w, h int) bool {
-	for _, s := range screens {
-		if s.IsCurrent {
-			return x >= 0 && y >= 0 && x+w <= s.Size.Width && y+h <= s.Size.Height
-		}
-	}
-	return false
-}
-
-// errRelaunchFailed replaces ErrRestartRequired when no new copy started:
-// the page shows "Restarting" for that one, which would then never end.
-var errRelaunchFailed = errors.New("the app could not restart itself: close it and open it again to continue")
-
-// relaunch starts a fresh copy of this program, then quits this one, and
-// reports whether the copy started. Used when the node or the library
-// needs a program restart.
-func (a *App) relaunch(then string) bool {
-	if !a.relaunching.CompareAndSwap(false, true) {
-		return true // a second click: the first one's copy is on its way
-	}
-	exe, err := os.Executable()
-	if err != nil {
-		a.relaunching.Store(false)
-		a.relaunchFailed(err)
-		return false
-	}
-	cmd := exec.Command(exe)
-	a.coreMu.Lock()
-	workDir, peers := a.cfg.WorkDir, a.cfg.Peers
-	a.coreMu.Unlock()
-	x, y := wruntime.WindowGetPosition(a.ctx)
-	w, h := wruntime.WindowGetSize(a.ctx)
-	// The Advanced settings go along; the new copy would otherwise use the
-	// default work folder and peers.
-	cmd.Env = withEnv(os.Environ(),
-		relaunchEnv+"="+then,
-		fmt.Sprintf("%s=%d,%d,%d,%d", windowEnv, x, y, w, h),
-		"BREEZ_RECOVERY_WORKDIR="+workDir,
-		"BREEZ_RECOVERY_PEERS="+peers)
-	if err := cmd.Start(); err != nil {
-		a.relaunching.Store(false)
-		a.relaunchFailed(err)
-		return false
-	}
-	a.log.tool("restarting the app")
-	// A plain exit rather than a window close: the library may still be
-	// winding down and the new copy needs the work folder released.
-	go func() {
-		time.Sleep(500 * time.Millisecond)
-		// Last, so the lines of the node stopping are in it too. A failure
-		// only costs the new copy the lines before the restart.
-		_ = a.log.save(filepath.Join(workDir, restartLogFile))
-		os.Exit(0)
-	}()
-	return true
-}
-
 // GetStatus refreshes the wallet status of the running node.
 func (a *App) GetStatus() (*core.Status, error) {
 	var st *core.Status
 	err := a.run("refresh status", func(ctx context.Context) error {
-		var err error
-		st, err = a.c().Status(ctx)
+		m, err := a.nodeCall(ctx, helperRequest{Call: callStatus})
+		st = m.Status
 		return err
 	})
 	return st, err
@@ -723,8 +799,8 @@ func (a *App) GetStatus() (*core.Status, error) {
 func (a *App) GetHistory() (*core.History, error) {
 	var h *core.History
 	err := a.run("history", func(ctx context.Context) error {
-		var err error
-		h, err = a.c().History(ctx)
+		m, err := a.nodeCall(ctx, helperRequest{Call: callHistory})
+		h = m.History
 		return err
 	})
 	if err == nil {
@@ -776,24 +852,20 @@ func (a *App) ValidateAddress(address string) error {
 func (a *App) PrepareSweep(address string) (*core.SweepPlan, error) {
 	var plan *core.SweepPlan
 	err := a.run("prepare sweep", func(ctx context.Context) error {
-		var err error
-		plan, err = a.c().PrepareSweep(ctx, strings.TrimSpace(address))
+		m, err := a.nodeCall(ctx, helperRequest{Call: callPrepareSweep, Address: strings.TrimSpace(address)})
+		plan = m.Plan
 		return err
 	})
 	return plan, err
 }
 
 // BroadcastSweep publishes the prepared sweep at the chosen fee target.
+// The helper refreshes the status after it, for the restored apps list.
 func (a *App) BroadcastSweep(confTarget int) (string, error) {
 	var txid string
 	err := a.run("broadcast sweep", func(ctx context.Context) error {
-		var err error
-		txid, err = a.c().BroadcastSweep(confTarget)
-		if err == nil {
-			// The restored apps list shows what a backup still holds; the
-			// sent funds have left it. Only the list depends on this.
-			_, _ = a.c().Status(ctx)
-		}
+		m, err := a.nodeCall(ctx, helperRequest{Call: callBroadcastSweep, ConfTarget: confTarget})
+		txid = m.TxID
 		return err
 	})
 	return txid, err
@@ -858,14 +930,6 @@ func (a *App) OpenWorkDir() {
 	if err := cmd.Start(); err != nil {
 		a.log.tool("open " + dir + ": " + err.Error())
 	}
-}
-
-// relaunchFailed tells the user what to do when the app could not start
-// its own next copy: the step it was about to take happens on the next
-// start, by hand.
-func (a *App) relaunchFailed(err error) {
-	a.log.tool("the app could not restart itself: " + err.Error())
-	wruntime.EventsEmit(a.ctx, "progress", "Close the app and open it again to continue.")
 }
 
 func tail(s string, n int) string {

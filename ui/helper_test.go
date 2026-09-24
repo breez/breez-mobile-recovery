@@ -25,23 +25,44 @@ const fakeHelperEnv = "BREEZ_RECOVERY_TEST_HELPER"
 func TestMain(m *testing.M) {
 	if mode := os.Getenv(fakeHelperEnv); mode != "" {
 		helperMain(os.Stdin, os.Stdout, func(rep core.Reporter) (nodeCore, func() error) {
-			return &fakeNode{rep: rep, restart: mode == "restart"}, func() error { return nil }
+			return newFakeNode(rep, mode), func() error { return nil }
 		})
 		os.Exit(1) // the helper exits itself
 	}
 	os.Exit(m.Run())
 }
 
+// newFakeNode is the node of a fake helper process in mode: "sync" works,
+// "restart" asks for a restart on every start, "crash" panics while it
+// syncs, "crashidle" panics just after a sync, "hang" never returns from
+// its stop, "stuck" ignores a cancel while it syncs.
+func newFakeNode(rep core.Reporter, mode string) *fakeNode {
+	f := &fakeNode{rep: rep, restart: mode == "restart", name: os.Getenv(helperEnv)}
+	switch mode {
+	case "crash":
+		f.wait = func(context.Context) error { panic("fake crash") }
+	case "crashidle":
+		f.afterStatus = func() { time.AfterFunc(300*time.Millisecond, func() { panic("fake crash while idle") }) }
+	case "hang":
+		f.stopHook = func() { select {} }
+	case "stuck":
+		f.wait = func(context.Context) error { select {} }
+	}
+	return f
+}
+
 // fakeNode stands in for core.Core. Its hooks, when set, run inside the
 // calls; it notes what happened, in order.
 type fakeNode struct {
 	rep     core.Reporter
-	restart bool // StartNode asks for a restart
+	restart bool   // StartNode asks for a restart
+	name    string // the backup it runs, logged on start
 
-	wait      func(ctx context.Context) error // inside WaitSynced
-	broadcast func()                          // inside BroadcastSweep
-	stopHook  func()                          // inside StopWithin
-	history   *core.History
+	wait        func(ctx context.Context) error // inside WaitSynced
+	broadcast   func()                          // inside BroadcastSweep
+	stopHook    func()                          // inside StopWithin
+	afterStatus func()                          // at the end of Status
+	history     *core.History
 
 	mu    sync.Mutex
 	notes []string
@@ -61,6 +82,9 @@ func (f *fakeNode) noted() []string {
 
 func (f *fakeNode) StartNode(ctx context.Context) error {
 	f.rep.Progress("Starting the node...")
+	if f.name != "" {
+		f.rep.NodeLog("fake node on " + f.name)
+	}
 	f.rep.NodeLog("lnd: node up")
 	if f.restart {
 		f.rep.NodeLog("lnd: stopped for the restart")
@@ -87,6 +111,9 @@ func (f *fakeNode) CheckChannelsOnChain(ctx context.Context, report func(core.Sy
 
 func (f *fakeNode) Status(ctx context.Context) (*core.Status, error) {
 	f.note("status")
+	if f.afterStatus != nil {
+		f.afterStatus()
+	}
 	return &core.Status{NodeID: "fake", OnchainConfirmed: 1000}, nil
 }
 
@@ -260,9 +287,11 @@ func TestHelperStartAndSync(t *testing.T) {
 }
 
 // A planned restart is a flag, not an error text, and the helper exits:
-// its library does not start again in the same process.
+// its library does not start again in the same process. Core stopped the
+// node; a stop after that leaves the library alone.
 func TestHelperPlannedRestart(t *testing.T) {
-	r := newRig(t, &fakeNode{restart: true}, nil)
+	fake := &fakeNode{restart: true}
+	r := newRig(t, fake, nil)
 	id := r.call(callStartAndSync)
 	m, lines, _ := r.reply(id)
 	if !m.Restart || m.Error != "" {
@@ -276,6 +305,11 @@ func TestHelperPlannedRestart(t *testing.T) {
 	}
 	if m, _, _ := r.reply(r.call(callStatus)); m.Error != errHelperStopping.Error() {
 		t.Errorf("a call after the restart: %+v", m)
+	}
+	r.send(helperRequest{Call: callStop})
+	r.exit()
+	if notes := fake.noted(); len(notes) != 0 {
+		t.Errorf("the node was used after the restart: %q", notes)
 	}
 }
 
