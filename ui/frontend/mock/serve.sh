@@ -2,7 +2,7 @@
 # Serves the frontend with a mocked Go backend for UI work without a node.
 # Usage: ui/frontend/mock/serve.sh   then open http://127.0.0.1:8765/
 # Query parameters: ?hasNode=1  ?scenario=channels|pending|onchain
-#   ?slow=list|restore|sync|rescan1|rescan2|channels (holds that stage)
+#   ?slow=list|restore|sync|addresses|rescan1|rescan2|channels (holds that stage)
 set -e
 cd "$(dirname "$0")"
 rm -rf out && mkdir out

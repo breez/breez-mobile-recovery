@@ -1,9 +1,10 @@
 // Package core restores a Breez mobile node from its cloud backup on a
 // desktop machine and moves the funds out to an on-chain address.
 //
-// It reuses the breez library unchanged: the same Google Drive provider, the
-// same restore code and the same lnd fork the mobile app runs. The command
-// line tool and the desktop app are thin layers over this package.
+// It runs the breez library unchanged, with the same lnd fork the mobile
+// app runs, but lists, downloads and restores the backups itself
+// (drive.go, icloud.go, restore.go). The command line tool and the desktop
+// app are thin layers over this package.
 package core
 
 import (
@@ -51,7 +52,7 @@ var DefaultPeers = []string{"bb1.breez.technology", "bb2.breez.technology"}
 // Build-time values. The Google client is a "Desktop app" OAuth client of
 // the Breez Google Cloud project; its secret is not confidential by Google's
 // own definition. The LSP token is only needed for LSP features, not for
-// closing channels or sweeping.
+// syncing or sweeping.
 //
 //	go build -ldflags "-X github.com/breez/breez-mobile-recovery/core.GoogleClientID=... \
 //	                   -X github.com/breez/breez-mobile-recovery/core.GoogleClientSecret=... \
@@ -353,8 +354,8 @@ func (c *Core) GoogleSnapshots(ctx context.Context) ([]Snapshot, error) {
 }
 
 // GoogleRestore downloads a snapshot from Drive, decrypts it and places the
-// node files in the work dir. Drive marks the snapshot as restored by this
-// machine, exactly as a new phone would.
+// node files in the work dir. Once they are in place it marks the snapshot
+// in Drive as restored by this machine, as a new phone would.
 func (c *Core) GoogleRestore(ctx context.Context, nodeID, mnemonic string, force bool) error {
 	if c.gsnaps == nil {
 		if _, err := c.GoogleSnapshots(ctx); err != nil {
@@ -516,8 +517,10 @@ func (c *Core) ZipRestore(zipPath, mnemonic string, force bool) error {
 
 // ---- node ------------------------------------------------------------------
 
-// initLibrary prepares the breez app without starting lnd. A second call
-// with a different provider re-initialises.
+// initLibrary prepares the breez app without starting lnd. From then on
+// this process is bound to the backup's folder (boundLibDir): another
+// folder needs a program restart. Called again before Stop, it returns at
+// once.
 func (c *Core) initLibrary(svc *services) error {
 	if c.dir() == "" {
 		return errors.New("no backup selected")
@@ -651,14 +654,15 @@ func (c *Core) startNode(ctx context.Context) error {
 }
 
 // firstStart handles the first start after a restore. lnd must not start
-// far behind the chain tip. Started at the bootstrap checkpoint (seen:
-// block 812,000 of 967,857) its chain notifier walks every block up to the
-// tip downloading full blocks, 4 a second, and only acts on a channel close
-// once it gets there: about 10 hours, with the closed channel's funds
-// invisible meanwhile. Started at the tip there is nothing to walk and old
-// closes are found through the filter scan. The headers take about a
-// minute; the next start is the one that counts, so wait for them here and
-// start again.
+// far behind the chain tip. In one real run its chain notifier started at
+// the bootstrap checkpoint (block 812,000 of 967,857) and walked every
+// block up to the tip downloading full blocks, 4 a second, before it acted
+// on a channel close: about 10 hours, with the closed channel's funds
+// invisible meanwhile. Why it started there is not established: lnd starts
+// the notifier only after its own wait for the chain
+// (initial-headers-sync-delta=2h, conf.go). Started at the tip there is
+// nothing to walk and old closes are found through the filter scan. So
+// wait for the headers here, about a minute, and start again.
 func (c *Core) firstStart(ctx context.Context) error {
 	if c.searchDone() || c.marked(chainReadyFile) {
 		return nil
@@ -670,10 +674,11 @@ func (c *Core) firstStart(ctx context.Context) error {
 	if err := c.mark(chainReadyFile); err != nil {
 		return err
 	}
-	// The library cannot be re-initialised in-process after a stop (it
-	// hangs), so the caller restarts the whole program. StopWithin returns
-	// once lnd is down even when the library's Stop hangs; the program
-	// exit releases whatever is left.
+	// The library's app starts and stops only once (breez/breez app.go)
+	// and a second bindings.Init in one process was never tried, so the
+	// caller restarts the whole program. StopWithin returns once lnd is
+	// down even when the library's Stop has not returned; the program exit
+	// releases whatever is left.
 	c.progressf("Caught up. Stopping the node; the app restarts to continue...")
 	if !c.StopWithin(20 * time.Second) {
 		c.progressf("The node did not stop cleanly; the program exits and starts again.")
@@ -720,8 +725,10 @@ func (c *Core) searchDone() bool { return c.marked(addressesExtendedFile) }
 func (c *Core) StopWithin(d time.Duration) bool { return stopWithin(c.Stop, d) }
 
 // lndShutdowns counts lnd's "Shutdown complete" lines. lnd logs it from
-// the first deferred call of lnd.Main, which runs last: after its
-// databases, wallet and chain backend are closed.
+// the first deferred call of lnd.Main, which runs last: after lnd closed
+// the databases it opened, its wallet among them. channel.db and the chain
+// service are the library's, released after lnd.Main returns (breez/breez
+// lnnode/daemon.go startDaemon).
 var lndShutdowns atomic.Int64
 
 func noteNodeLine(line string) {
@@ -732,10 +739,11 @@ func noteNodeLine(line string) {
 
 // stopWithin runs stop and reports whether the node stopped within d. It
 // returns as soon as lnd has finished shutting down: the library's own
-// Stop then hangs for good on some nodes (breez/breez lnnode/daemon.go
-// stopDaemon waits for its goroutines while holding a lock one of them
-// takes), which cost every restart its whole wait. Every caller exits the
-// program next, which ends what is left of the library.
+// Stop can take much longer after that (0.1 s after lnd in one real run;
+// in others it had not returned at the 20 s limit, and why is not
+// established), and waiting for it cost those restarts the whole limit.
+// Every caller exits the program next, which ends what is left of the
+// library.
 func stopWithin(stop func(), d time.Duration) bool {
 	before := lndShutdowns.Load()
 	done := make(chan struct{})
@@ -761,9 +769,9 @@ func stopWithin(stop func(), d time.Duration) bool {
 }
 
 // ErrRestartRequired is returned by StartNode and WaitSynced when the
-// program must be started again for the node to pick up a change (a
-// restore, the first catch-up with the chain, addresses found paid after
-// the backup).
+// program must be started again for the node to pick up a change (the
+// first catch-up with the chain, the history shortcut, or a fresh history
+// check, e.g. for addresses found paid after the backup).
 var ErrRestartRequired = errors.New("restart required")
 
 const (
@@ -787,7 +795,7 @@ const (
 
 // SyncProgress is reported while the node catches up with the chain.
 type SyncProgress struct {
-	Stage   string  `json:"stage"` // "connecting", "headers", "rescan", "synced"
+	Stage   string  `json:"stage"` // "connecting", "headers", "rescan", "synced"; the chain walks: "addresses", "channels"
 	Height  uint32  `json:"height"`
 	Target  uint32  `json:"target"`  // estimated chain tip
 	Percent float64 `json:"percent"` // -1 while unknown
@@ -806,7 +814,9 @@ type SyncProgress struct {
 // on every change. On the first sync after a restore it also searches for
 // funds paid after the backup, as soon as the chain is caught up and while
 // lnd checks the history: finding them first saves checking the history
-// twice. It returns ErrRestartRequired when the search found some.
+// twice. It returns ErrRestartRequired when the node has to start again
+// for the history shortcut or for a fresh history check (see
+// findLaterFunds and verifyFound).
 func (c *Core) WaitSynced(ctx context.Context, onProgress func(SyncProgress)) error {
 	if c.node == nil {
 		return errors.New("node not started")

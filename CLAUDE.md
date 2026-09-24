@@ -43,7 +43,9 @@ OAuth client of the `breez-technology` Google Cloud project), or bake them
 in with `-ldflags "-X .../core.GoogleClientID=<id> -X .../core.GoogleClientSecret=<secret>"`. `BREEZ_RECOVERY_WORKDIR` overrides the work
 folder, useful for testing next to a real one.
 
-`go test ./core` covers the phrase to key derivation and decryption.
+`go test ./core && go test -tags webkit2_41 ./ui` runs the unit tests;
+the ones on a real node or wallet skip unless their `BREEZ_LIVE_*`
+variables are set.
 `go vet -tags walletrpc,chainrpc ./core . && go vet -tags webkit2_41,walletrpc,chainrpc ./ui` before
 committing. The `walletrpc` tag compiles lnd's WalletKit RPC in; without
 it the search for funds paid after the backup fails with an unimplemented RPC.
@@ -60,7 +62,8 @@ method.
 
 The frontend talks to Go through `window.go.main.App.<Method>` and receives
 events through `window.runtime.EventsOn`: `progress` (a line of text),
-`log` (batched lines), `sync` (SyncProgress), `signin` (provider, url).
+`log` (batched lines), `sync` (SyncProgress), `signin` (provider, url),
+`restarting` (the node stops before the app restarts itself).
 Every value is rendered with textContent; keep it that way.
 
 ## Gotchas learned the hard way
@@ -71,10 +74,12 @@ Every value is rendered with textContent; keep it that way.
 - `bindings.Init` and the rest of the library are process-wide singletons.
   `bindings.RestoreBackup` stops and re-creates the app object itself;
   starting after it works. Two lnd instances cannot share a work folder.
-  The library's databases (`db.Get`, `chainservice.Get`,
-  `channeldbservice.Get`) and its logger are refcounted singletons that
-  ignore the folder argument after the first call: a process is bound to
-  the first folder the library was initialised on (`boundLibDir`).
+  The library's config and log file are set up once per process
+  (sync.Once in config/init.go and log/init.go), and its databases
+  (`db.Get`, `chainservice.Get`, `channeldbservice.Get`) are refcounted
+  singletons that ignore the folder argument while a reference is held: a
+  process is bound to the first folder the library was initialised on
+  (`boundLibDir`).
 - One restore path for every source (core/restore.go): fetch into memory,
   decrypt and check ALL files, write a staging folder, one rename into
   place; only then is an earlier restore moved aside (never deleted), the
@@ -101,8 +106,9 @@ Every value is rendered with textContent; keep it that way.
   chosen folder. A restore never touches the library, so the node starts
   in the process that restored (no restart after a restore since
   2026-09-24).
-  Switching backups after the library ran needs a program restart
-  (`App.RestoreOther` relaunches with `BREEZ_RECOVERY_RELAUNCH=restore-other`).
+  Switching backups after the library ran needs a program restart:
+  `App.RestoreOther` relaunches with `BREEZ_RECOVERY_RELAUNCH=restore-other`,
+  `App.UseRestored` with `BREEZ_RECOVERY_RELAUNCH=use:<name>`.
   Restoring a backup that is already there moves the old folder aside
   (`<name>.replaced-<time>`), it never deletes a wallet. A legacy
   single-folder install is moved into `backups/` on start, by renaming a
@@ -169,10 +175,12 @@ Every value is rendered with textContent; keep it that way.
   file is NOT used: its Init only logs a failed drop, removes the file
   when its second, unrelated drop succeeded, and throws away lnd's scan
   positions. After the history check `verifyFound` requires every find in
-  the wallet's transactions, or the sync stops with an error. Before any
-  of it the derivation is checked against the wallet: the last address
-  the wallet derived on a branch must be the one this code derives at
-  that index, or the search fails loudly. The search runs once per restore
+  the wallet's transactions: a missing one orders one more full history
+  check (a restart), and if it is still missing the sync stops with an
+  error. Before any of it the derivation is checked against the wallet:
+  the last address the wallet derived on a branch must be the one this
+  code derives at that index, or the search fails loudly. The search runs
+  once per restore
   (`addresses-extended` marker, which folders of older releases carry too,
   so they are left alone) inside WaitSynced, after this process has seen
   the headers catch up and before the history check is waited for: a hit
@@ -198,14 +206,15 @@ Every value is rendered with textContent; keep it that way.
   the birthday is the only start that is always safe. The library does
   not keep the whole chain: it bootstraps the headers from a point shortly
   before the wallet's birthday (first header 687,000 for a wallet of 13
-  Jun 2021, 557,000 for one of 5 Jan 2019) and the header file is EMPTY
-  below it. Every empty header has the same hash, and asking neutrino for
-  a filter or header there fails with "target hash not found in index".
+  Jun 2021, 557,000 for one of 5 Jan 2019) and the header file is empty
+  below it but for the earlier checkpoints, written as lone headers. Every
+  empty header has the same hash, and asking neutrino for a filter or
+  header there fails with "target hash not found in index".
   The first real header's own filter cannot be fetched either
   ("got entire filter, but job was not finished"): a filter is verified
   against the filter header of the block before. So the walk starts two
   days before the birthday but never below the block after the first
-  real header (`heightBefore`), which on the four backups looked at is
+  real header (`walkStart`, `firstBlock`), which on the four backups looked at is
   18 hours to 3 days before the wallet was created; the backup matrix caught this, the
   first test backup happened to sit above the hole. Any change to the address set forces a rescan on
   existing restores: state that cost before making one.
@@ -223,14 +232,15 @@ Every value is rendered with textContent; keep it that way.
   written and lnd's ordinary check runs. A wallet that then logs "Unable
   to synchronize wallet to chain" gets the full check ordered.
 - First start after a restore: lnd must start at the chain tip (see the
-  closed-channel entry below), so the first process only waits for the
+  closed-channel entry below), so the first start only waits for the
   headers, writes `chain-ready` and the app restarts itself
   (BREEZ_RECOVERY_RELAUNCH=continue; the CLI asks to be run again).
-  Re-initialising the library in-process after a stop hangs, which is why
-  it is a program restart.
+  Why a program restart: see the restart entry below. In a real restore
+  on 2026-09-24 the restart took 1 s.
 - Rescan progress persists in wallet.db, a restart resumes where it was.
-  A `FORCE_RESCAN` file in the work folder makes the library drop the
-  transaction store and rescan from the birthday; handy for testing.
+  A `FORCE_RESCAN` file in the backup's folder (`backups/<name>/`) makes
+  the library drop the transaction store and lnd's height hints and rescan
+  from the birthday; handy for testing.
 - Peer quality dominates sync time: 76 blocks/s with public peers versus
   600/s with the Breez node. The library builds neutrino itself from
   breez.conf `[Job Options] peer=` lines (chainservice/init.go, exclusive
@@ -290,13 +300,16 @@ Every value is rendered with textContent; keep it that way.
   864 sat to the wallet; the sweeper's budget is half the amount, small
   outputs are swept. Two things made this take ~10 hours and look like
   "Nothing left to recover": (1) lnd started at the bootstrap checkpoint
-  (triggerHeight=812000) because the look-ahead restart came seconds
-  after the first start, before the one-minute header sync; its neutrino
-  notifier then walks every block to the tip downloading full blocks, ~4
-  a second, and its historical spend rescan only covers up to where it
-  started. StartNode now waits for "Fully caught up with cfheaders"
-  before the look-ahead restart, so the final process starts lnd at the
-  tip and the close is found by the filter scan in minutes (lnd persists
+  (triggerHeight=812000) in the copy the look-ahead restart started,
+  seconds after the first start and before the one-minute header sync;
+  its neutrino notifier then walks every block to the tip downloading
+  full blocks, ~4 a second, and its historical spend rescan only covers
+  up to where it started. Why it started there is not established: lnd
+  starts the notifier only after its own wait for the chain
+  (initial-headers-sync-delta=2h, lnd.conf). The first start now waits
+  for "Fully caught up with cfheaders" before its chain-ready restart
+  (firstStart), so the final process starts lnd at the tip and the close
+  is found by the filter scan in minutes (lnd persists
   its scan position as a height hint across restarts). (2) The screen
   only knew lnd's balances. The channel check now derives the to_remote
   script (`toUsScript`, lnwallet.CommitScriptToRemote with the PEER as
@@ -306,11 +319,12 @@ Every value is rendered with textContent; keep it that way.
   have swept it), and reports the rest as `SpentChannel.Collect`, counted
   as Pending. Verified with `TestToUsScriptLive` on 14 real force closes:
   the 3 that paid match the derived address exactly. A COOPERATIVE close
-  pays a wallet address instead; the wallet finds that itself (address
-  look-ahead) and Collect stays 0. The app's check and lnd's scan halve
-  each other's speed when they run together (845 blocks/s alone, ~250 and
-  ~70-190 together); total time is the same either way, so they are not
-  ordered. The CLI `status` keeps the node running while collecting.
+  pays a wallet address instead, which the search for funds paid after
+  the backup and the history check find; Collect stays 0. The app's check
+  and lnd's scan halve each other's speed when they run together (845
+  blocks/s alone, ~250 and ~70-190 together); total time is the same
+  either way, so they are not ordered. The CLI `status` keeps the node
+  running while collecting.
 - The tool closes nothing (decided by Roy 2026-09-20): no cooperative
   close, no force close, and `recovery lncli` refuses closechannel,
   closeallchannels and abandonchannel. Breez closed its channels with the
@@ -331,21 +345,30 @@ Every value is rendered with textContent; keep it that way.
   is listed but not counted as funds.
 - Old nodes can make lnd's PendingChannels RPC fail ("unable to find
   arbitrator"). Status reports a warning instead of failing.
-- Restoring a DIFFERENT node over a work dir that already held one must
-  delete `data/chain/bitcoin/<net>/channel.backup` (guardRestore does):
+- A node's folder must never hold another node's
+  `data/chain/bitcoin/<net>/channel.backup`; one folder per backup rules
+  it out, as every restore writes a fresh staging folder with only the
+  node files and the backup id (placeBackupFiles). Why it matters:
   lnd's SCB is encrypted with the seed of the node that wrote it, and with
   a foreign one lnd aborts at startup ("unable to extract on disk
   encrypted SCB: chacha20poly1305: message authentication failed"), which
   takes the library down with it and then the process panics (2026-09-17,
   Roy restoring his 2022 backup over the 2019 one).
-- The library cannot be started again in a process that stopped it (after
-  the address look-ahead it hung), so the paths that need a stopped node
-  return ErrRestartRequired and the app relaunches itself; the CLI exits
-  and asks to be run again. The 2026-09-17 crash when Roy picked a second
-  backup came from the foreign `channel.backup` above: lnd aborts in
-  server.Start, SubscribeInvoices then fails and the account service
-  reads the nil stream (breez/breez account/payments.go:1303-1310). That
-  nil read can happen on any start where the subscription fails; one
+- The paths that need a stopped node return ErrRestartRequired and the
+  app relaunches itself; the CLI exits and asks to be run again. A new
+  process is the known way to start the library again: its app object
+  starts and stops only once (breez app.go Start, Stop), a process stays
+  bound to its first folder (`boundLibDir` above), and a second
+  `bindings.Init` in one process was never tried (the library's own
+  RestoreBackup stops and re-creates its app in-process). What sometimes
+  hangs is the library's Stop after lnd is down (it returned 0.1 s after
+  lnd in one real run and not within the 20 s limit in others; why is not
+  established), so StopWithin returns once lnd logs "LTND: Shutdown
+  complete" and the program exit ends the rest. The 2026-09-17 crash when
+  Roy picked a second backup came from the foreign `channel.backup` above:
+  lnd aborts in server.Start, SubscribeInvoices then fails and the account
+  service reads the nil stream (breez/breez account/payments.go:1303-1310).
+  That nil read can happen on any start where the subscription fails; one
   folder per backup removed this cause of it.
 - History (core/history.go) is a ledger with one entry per money
   movement. Sources: the app's own payment list (`bindings.GetPayments`,
@@ -420,9 +443,10 @@ Every value is rendered with textContent; keep it that way.
   token to `127.0.0.1:53821`. That token therefore shows in the GitHub
   Pages request log; the container's custom URL scheme would avoid it but
   needs an app bundle that registers the scheme and a token made for it.
-- Restoring through the library marks the snapshot in the cloud as restored
-  by this machine, as a new phone would; a phone still running that node
-  stops itself on its next start. The direct Drive listing marks nothing.
+- A Google Drive restore marks the snapshot as restored by this machine,
+  as a new phone would (core/drive.go markRestored, once the files are in
+  place); a phone still running that node stops itself on its next start.
+  An iCloud restore and the Drive listing mark nothing.
 - The production defaults (breez server, bootstrap, closed channels URL,
   fee URL, zero-conf and scid-alias options in lnd.conf) come from the
   `breez.conf` and `lnd.conf` bundled in the released APK. The LSP token is

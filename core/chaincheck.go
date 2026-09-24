@@ -47,8 +47,8 @@ type SpentChannel struct {
 }
 
 // A channel lnd lists as open gets one of these verdicts. Only verdictOpen
-// counts as funds and only verdictOpen is ever closed: the default for
-// anything the check did not positively confirm is to leave it alone.
+// counts as funds in a channel: the default for anything the check did not
+// positively confirm is to leave it out.
 const (
 	verdictOpen       = "open"       // funding output found on chain, unspent, and the wallet holds its key
 	verdictSpent      = "spent"      // funding output spent: closed after the backup was taken
@@ -599,18 +599,18 @@ func scanFundingOutputs(ctx context.Context, chain filterSource, fundings []chan
 }
 
 // CheckChannelsOnChain verifies every channel lnd lists as open before the
-// app shows it as funds or closes it. A backup is a snapshot: channels that
-// closed after it was taken still look open in it, and a backup can even
-// pair one node's wallet with another node's channels (seen in a real Breez
-// backup from 2022). Two checks, both answered by the node itself, nothing
-// is asked of a third party:
+// app shows it as funds. A backup is a snapshot: channels that closed after
+// it was taken still look open in it, and a backup can even pair one node's
+// wallet with another node's channels (seen in a real Breez backup from
+// 2022). Two checks, both answered by the node itself, nothing is asked of
+// a third party:
 //
 //  1. the wallet must derive the channel's funding key at the channel's own
 //     key locator (walletrpc DeriveKey);
 //  2. the node's neutrino must find the funding output on chain, unspent.
 //
-// Only a channel that passes both counts as funds and can be closed. A
-// failure of the check itself is returned, never swallowed.
+// Only a channel that passes both counts as funds. A failure of the check
+// itself is returned, never swallowed.
 //
 // It returns the channels found closed on chain. onProgress may be nil.
 func (c *Core) CheckChannelsOnChain(ctx context.Context, onProgress func(SyncProgress)) ([]SpentChannel, error) {

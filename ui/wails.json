@@ -16,6 +16,6 @@
     "productName": "Breez Recovery",
     "productVersion": "0.1.0",
     "copyright": "Breez",
-    "comments": "Restores a Breez mobile wallet backup and moves the funds to a bitcoin address."
+    "comments": "Restores a Breez app backup and moves the funds to a bitcoin address."
   }
 }

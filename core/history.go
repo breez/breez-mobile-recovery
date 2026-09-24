@@ -292,12 +292,12 @@ func (c *Core) LndTotals(ctx context.Context, payments []*data.Payment) (*LndTot
 	return t, nil
 }
 
-// History builds the ledger from three sources: the payment list the mobile
+// History builds the ledger from four sources: the payment list the mobile
 // app kept in its database (sent, received, deposits, withdrawals, closed
-// channels), lnd's closed and closing channels, and the on-chain wallet's
-// transactions. On-chain transactions that belong to a channel close or a
-// deposit swap are folded into that entry, so the same money is never
-// listed twice.
+// channels), lnd's closed and closing channels, lnd's invoices and payments
+// (the record of what was paid), and the on-chain wallet's transactions.
+// On-chain transactions that belong to a channel close or a deposit swap
+// are folded into that entry, so the same money is never listed twice.
 func (c *Core) History(ctx context.Context) (*History, error) {
 	payments, err := c.RawPayments()
 	if err != nil {

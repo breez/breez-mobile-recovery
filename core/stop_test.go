@@ -5,8 +5,8 @@ import (
 	"time"
 )
 
-// A restart waits for lnd, not for the library's Stop, which can hang for
-// good after lnd is down: lnd's "Shutdown complete" ends the wait.
+// A restart waits for lnd, not for the library's Stop, which can take much
+// longer after lnd is down: lnd's "Shutdown complete" ends the wait.
 func TestStopWithinEndsWhenLndIsDown(t *testing.T) {
 	hang := func() { select {} }
 

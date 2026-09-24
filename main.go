@@ -133,10 +133,11 @@ func main() {
 		usage()
 		os.Exit(2)
 	}
-	// The library's stop can hang after lnd itself is down (seen on several
-	// restored nodes: the command printed its result and never returned).
-	// lnd has closed its databases by then, so give it a bounded wait and
-	// exit; the exit releases whatever is left, as the desktop app does.
+	// The library's stop can hang after lnd itself is down (seen in the
+	// backup matrix: the command printed its result and never returned),
+	// so give it a bounded wait and exit. StopWithin returns once lnd has
+	// shut down; channel.db and the chain service are the library's and may
+	// still be open, and the exit releases them, as in the desktop app.
 	if !c.StopWithin(30 * time.Second) {
 		fmt.Fprintln(os.Stderr, "the node did not stop cleanly; exiting")
 	}

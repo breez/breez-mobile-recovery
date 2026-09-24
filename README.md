@@ -1,7 +1,7 @@
 # Breez Recovery
 
 > **Experimental.** Tested on a handful of real backups so far. Keep the
-> log (Log, then Save log) and report problems in the issues.
+> log (Logs, then Save log) and report problems in the issues.
 
 Restores a Breez app backup from Google Drive, iCloud or a backup file on
 your computer, and sends the funds to a bitcoin address. It exists so funds

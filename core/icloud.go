@@ -29,9 +29,9 @@ import (
 // identifies this tool to the container; the user still signs in with
 // their Apple ID in the browser. Apple then redirects to the static
 // callback page registered with the token (icloud-callback.html on the
-// gh-pages branch of this repo), which forwards the session token to the
-// tool listening on localhost. Production tokens only accept https
-// callbacks, which is why the page exists.
+// gh-pages branch of the breez library repo, breez/breez), which forwards
+// the session token to the tool listening on localhost. Production tokens
+// only accept https callbacks, which is why the page exists.
 const (
 	icloudContainer   = "iCloud.technology.breez.client"
 	icloudEnvironment = "production"
@@ -367,9 +367,8 @@ func (c *icloudClient) snapshots() ([]backup.SnapshotInfo, map[string]ckRecord, 
 	return snaps, records, nil
 }
 
-// download fetches the backup files of a record into the work dir's tmp
-// directory and returns their paths: either a single zip or the three
-// legacy database files.
+// download fetches the backup files of a record into memory, by file name:
+// either a single backup.zip or the three legacy database files.
 func (c *icloudClient) download(r ckRecord) (map[string][]byte, error) {
 	fetch := func(field, name string) ([]byte, error) {
 		u, ok := r.asset(field)

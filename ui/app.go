@@ -323,7 +323,8 @@ func (a *App) GetState() State {
 	}
 }
 
-// Settings are the advanced options a user can change before restoring.
+// Settings are the advanced options a user can change until a node starts
+// in this process.
 type Settings struct {
 	WorkDir string `json:"workDir"`
 	Peers   string `json:"peers"`
@@ -339,9 +340,10 @@ func (a *App) ApplySettings(s Settings) (State, error) {
 	if strings.TrimSpace(s.WorkDir) == "" {
 		return State{}, errors.New("the work folder cannot be empty")
 	}
-	// Once the library ran in this process it cannot be stopped and started
-	// again (it hangs or crashes, see CLAUDE.md), and its Stop can hang:
-	// settings change before a node was started, or after a restart.
+	// Once the library ran in this process, the process stays bound to
+	// that backup folder and those peers (the library reads its config and
+	// opens its log once per process, see CLAUDE.md): settings change
+	// before a node was started, or after a restart.
 	if a.c().LibraryBound() {
 		return State{}, errors.New("close and reopen the app to change these settings: the node already ran in this session")
 	}
@@ -416,7 +418,7 @@ func (a *App) ChooseZip() (ZipInfo, error) {
 	return a.InspectZip(path)
 }
 
-// InspectZip checks a backup file (also used for dropped files).
+// InspectZip checks a backup file.
 func (a *App) InspectZip(path string) (ZipInfo, error) {
 	needs, err := core.ZipNeedsPhrase(path)
 	if err != nil {
@@ -531,7 +533,9 @@ func (a *App) RestoredApps() []core.RestoredBackup { return a.c().RestoredBackup
 
 // UseRestored continues with another backup restored on this computer.
 // Before a node ran in this process it switches at once; after, the app
-// restarts on the start screen with that backup in use, and reports true.
+// restarts with that backup in use and carries on syncing it, and reports
+// true. A switch that fails after the restart shows its error on the start
+// screen.
 func (a *App) UseRestored(name string) (bool, error) {
 	c := a.c()
 	if !c.LibraryBound() {
@@ -599,7 +603,7 @@ func (a *App) StartAndSync() (*core.Status, error) {
 
 // relaunchEnv tells a copy of the program started by relaunch what to do
 // first: "continue" the sync, open on the backup sources ("restore-other"),
-// or open on the start screen with another restored backup in use
+// or switch to another restored backup and continue its sync
 // ("use:<name>").
 const relaunchEnv = "BREEZ_RECOVERY_RELAUNCH"
 

@@ -661,8 +661,11 @@ func (n *node) advanceTo(ctx context.Context, b *addrBranch, upTo uint32) error 
 
 // findLaterFunds searches the chain for funds paid to the wallet after its
 // backup (see the top of this file), in the same walk that checks the
-// channels. When it finds some it moves the wallet up to the paid
-// addresses, orders a fresh history check and returns ErrRestartRequired.
+// channels. When it finds payments the wallet does not know it moves the
+// wallet up to the paid addresses, orders a fresh history check and
+// returns ErrRestartRequired. When it finds none and the walk proves
+// lnd's history check has nothing to find, it orders the history shortcut
+// (syncskip.go) and returns ErrRestartRequired too.
 func (c *Core) findLaterFunds(ctx context.Context, report func(SyncProgress)) error {
 	birthday, err := c.walletBirthdayTime()
 	if err != nil {

@@ -16,7 +16,7 @@
     snapshots: [],
     selected: null,       // chosen snapshot
     zip: null,            // {path,name,needsPhrase}
-    force: false,         // overwrite an existing restored wallet
+    force: false,         // restore again over an earlier restore, which is moved aside (App.Restore asks)
     status: null,         // last wallet status
     sweepPlan: null,
     sweepTarget: 6,
@@ -169,7 +169,7 @@
         title.appendChild(t);
       }
       main.appendChild(title);
-      // A backup file restored before its node id was kept shows as such.
+      // A backup file whose node id is not known shows as such.
       main.appendChild(el("div", "item-sub", a.nodeId || "From a backup file"));
       // What its funds screen showed last, under the id, in the tiles'
       // terms and order; it may have changed since. Nothing when that was
@@ -899,9 +899,10 @@
     // A relaunched copy starts hidden: show it now, on the right screen.
     api.ShowWindow();
     if (ui.state.autoContinue) {
-      // Relaunched by the app itself after preparing the node. This copy
-      // only got this far once the old one had exited: core.New waits for
-      // the work folder lock, which the old copy held to the end.
+      // Relaunched by the app itself to carry on: after preparing the node,
+      // or to switch to another restored backup. This copy only got this far
+      // once the old one had exited: core.New waits for the work folder
+      // lock, which the old copy held to the end.
       startSync();
     }
   }

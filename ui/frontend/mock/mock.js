@@ -50,11 +50,11 @@
       await sleep(1200);
       progress("Decrypting and placing the node files...");
       await sleep(slow === "restore" ? 600000 : 1000);
-      progress("Backup restored into /home/roys/.breez-recovery.");
+      progress("Backup restored into /home/roys/.breez-recovery/backups/" + nodeId + ".");
     },
     StartAndSync: async () => {
       progress("Starting the node..."); await sleep(800); progress("Node is up.");
-      const steps = [["connecting", 0, 0, 0, "Connecting to the bitcoin network..."], ["headers", 589000, 967310, 3, ""], ["headers", 700000, 967310, 6, ""], ["headers", 850000, 967310, 8, ""], ["headers", 940000, 967310, 8, ""], ["rescan", 557139, 967310, 8, "Checking every block since block 557139 for your channel and payment history (938 addresses). The bar starts moving with the first transaction found.", -1, 0, 0], ["rescan", 612400, 967310, 8, "Checked at least through block 612400 of 967310. The bar moves each time a transaction is found.", 13.5, 7, 1583000000], ["synced", 967310, 967310, 8, "Synced to the chain at block 967310"]];
+      const steps = [["connecting", 0, 0, 0, "Connecting to the bitcoin network..."], ["headers", 589000, 967310, 3, ""], ["headers", 700000, 967310, 6, ""], ["headers", 850000, 967310, 8, ""], ["headers", 940000, 967310, 8, ""], ["rescan", 557139, 967310, 8, "Reached the chain tip. Now checking every block for your channel and payment history; this is the slow part of a first sync.", -1, 0, 0], ["rescan", 612400, 967310, 8, "Checking every block for your channel and payment history (938 addresses). Reached 29 Feb 2020.", 13.5, 7, 1583000000], ["synced", 967310, 967310, 8, "Synced to the chain at block 967310"]];
       let searched = false;
       for (const [stage, height, target, peers, msg, pct, found, through] of steps) {
         if (stage === "rescan" && !searched) {

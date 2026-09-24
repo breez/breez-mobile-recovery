@@ -33,9 +33,9 @@ var googleEndpoint = oauth2.Endpoint{
 	TokenURL: "https://oauth2.googleapis.com/token",
 }
 
-// googleAuth implements the breez AuthService/AppServices sign-in contract:
-// SignIn returns a fresh access token. The oauth2 token source refreshes it
-// transparently using the cached refresh token.
+// googleAuth is the Google sign-in the Drive calls use (drive.go). The
+// oauth2 token source refreshes the access token transparently using the
+// cached refresh token.
 type googleAuth struct {
 	src oauth2.TokenSource
 }

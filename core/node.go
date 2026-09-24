@@ -23,7 +23,8 @@ import (
 )
 
 // services implements bindings.AppServices. Notifications are fanned out to
-// waiters; backup sign-in is delegated to Google when a provider is in use.
+// waiters. No backup provider is set (this package reads the backups
+// itself), so a sign-in the library asks for fails.
 type services struct {
 	providerName string
 	auth         *googleAuth
