@@ -1,6 +1,7 @@
 package core
 
 import (
+	"encoding/hex"
 	"errors"
 	"os"
 	"path/filepath"
@@ -195,6 +196,56 @@ func TestRestoredBackupsLastFunds(t *testing.T) {
 	}
 	if f := got[nodeB].Funds; f != nil {
 		t.Errorf("node B funds %+v, want none", f)
+	}
+}
+
+// A backup restored from a file is listed with its node id, read from the
+// graph's source node in its channel.db, like a cloud backup is by name.
+func TestRestoredBackupsNodeID(t *testing.T) {
+	root := t.TempDir()
+	c := testCore(t, root)
+	if err := place(t, c, nodeA, "A", false); err != nil {
+		t.Fatal(err)
+	}
+	zipName := "zip-4c1d9a7e22b0f513"
+	if err := place(t, c, zipName, "Z", false); err != nil {
+		t.Fatal(err)
+	}
+	// channel.db of the zip restore, with lnd's source node key.
+	pub, _ := hex.DecodeString(nodeB)
+	chanDB := filepath.Join(c.backupDir(zipName), nodeFileTargets("mainnet")["channel.db"], "channel.db")
+	db, err := bolt.Open(chanDB, 0600, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	err = db.Update(func(tx *bolt.Tx) error {
+		b, err := tx.CreateBucketIfNotExists([]byte("graph-node"))
+		if err != nil {
+			return err
+		}
+		return b.Put([]byte("source"), pub)
+	})
+	db.Close()
+	if err != nil {
+		t.Fatal(err)
+	}
+	id, err := readNodeID(chanDB)
+	if err != nil || id != nodeB {
+		t.Fatalf("readNodeID: %q, %v", id, err)
+	}
+	if err := os.WriteFile(filepath.Join(c.backupDir(zipName), nodeIDFile), []byte(id+"\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	got := map[string]string{}
+	for _, b := range c.RestoredBackups() {
+		got[b.Name] = b.NodeID
+	}
+	if got[nodeA] != nodeA || got[zipName] != nodeB {
+		t.Errorf("node ids %v", got)
+	}
+	// A channel.db without the key is an error, not a wrong id.
+	if _, err := readNodeID(filepath.Join(c.backupDir(nodeA), nodeFileTargets("mainnet")["channel.db"], "channel.db")); err == nil {
+		t.Error("read a node id from a channel.db without one")
 	}
 }
 

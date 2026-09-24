@@ -503,6 +503,11 @@ func (c *Core) ZipRestore(zipPath, mnemonic string, force bool) error {
 	if _, err := c.placeBackup(name, decoded, force); err != nil {
 		return err
 	}
+	// The folder is named after the file; the list of restored backups
+	// shows the node id, which only the decrypted files hold.
+	if id, err := readNodeID(filepath.Join(c.dir(), nodeFileTargets(c.cfg.Network)["channel.db"], "channel.db")); err == nil {
+		_ = writeFileAtomic(filepath.Join(c.dir(), nodeIDFile), []byte(id+"\n"))
+	}
 	c.progressf("Backup restored into %s.", c.dir())
 	return nil
 }

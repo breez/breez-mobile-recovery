@@ -13,6 +13,8 @@ import (
 	"sort"
 	"strings"
 	"time"
+
+	bolt "go.etcd.io/bbolt"
 )
 
 // Layout of the work folder. Every restored backup lives in a folder of its
@@ -111,7 +113,10 @@ func (c *Core) selectBackup(name string) error {
 
 // RestoredBackup is a backup folder in the work folder.
 type RestoredBackup struct {
-	Name    string `json:"name"`
+	Name string `json:"name"`
+	// NodeID is the node's public key: the name of a cloud backup's folder,
+	// read from the node's channel.db when a backup file was restored.
+	NodeID  string `json:"nodeId,omitempty"`
 	Dir     string `json:"dir"`
 	Current bool   `json:"current"`
 	// LastOpened is when its node last ran here (the time of its lnd log);
@@ -128,7 +133,13 @@ func (c *Core) RestoredBackups() []RestoredBackup {
 	for _, e := range entries {
 		dir := c.backupDir(e.Name())
 		if e.IsDir() && backupNameRE.MatchString(e.Name()) && hasNode(dir, c.cfg.Network) {
-			rb := RestoredBackup{Name: e.Name(), Dir: dir, Current: dir == c.nodeDir}
+			rb := RestoredBackup{Name: e.Name(), Dir: dir, Current: dir == c.nodeDir, NodeID: e.Name()}
+			if strings.HasPrefix(e.Name(), "zip-") {
+				rb.NodeID = ""
+				if data, err := os.ReadFile(filepath.Join(dir, nodeIDFile)); err == nil {
+					rb.NodeID = strings.TrimSpace(string(data))
+				}
+			}
 			if fi, err := os.Stat(lndLogPath(dir, c.cfg.Network)); err == nil {
 				t := fi.ModTime()
 				rb.LastOpened = &t
@@ -144,6 +155,35 @@ func (c *Core) RestoredBackups() []RestoredBackup {
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].Name < out[j].Name })
 	return out
+}
+
+// nodeIDFile keeps the node id of a backup restored from a file, whose
+// folder is named after the file (the id is only readable once decrypted).
+const nodeIDFile = "node-id"
+
+// readNodeID reads the node's own public key from its channel.db, where
+// lnd keeps it as the graph's source node (lnd channeldb/graph.go:
+// nodeBucket "graph-node", sourceKey "source").
+func readNodeID(channelDB string) (string, error) {
+	db, err := bolt.Open(channelDB, 0600, &bolt.Options{ReadOnly: true, Timeout: time.Second})
+	if err != nil {
+		return "", err
+	}
+	defer db.Close()
+	var id string
+	err = db.View(func(tx *bolt.Tx) error {
+		nodes := tx.Bucket([]byte("graph-node"))
+		if nodes == nil {
+			return errors.New("no graph-node bucket")
+		}
+		pub := nodes.Get([]byte("source"))
+		if len(pub) != 33 {
+			return fmt.Errorf("source node key of %d bytes", len(pub))
+		}
+		id = hex.EncodeToString(pub)
+		return nil
+	})
+	return id, err
 }
 
 // BackupName is the folder name a backup gets: the node id for a cloud

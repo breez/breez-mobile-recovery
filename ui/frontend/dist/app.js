@@ -161,7 +161,8 @@
       item.title = a.dir;
       const main = el("div", "item-main");
       main.appendChild(el("div", "item-title", a.lastOpened ? "Last opened " + fmtDate(a.lastOpened) : "Not opened yet"));
-      main.appendChild(el("div", "item-sub", a.name.startsWith("zip-") ? "From a backup file" : a.name));
+      // A backup file restored before its node id was kept shows as such.
+      main.appendChild(el("div", "item-sub", a.nodeId || "From a backup file"));
       item.appendChild(main);
       // What its funds screen showed last; nothing when that was nothing,
       // "settling" when a close with a payout still unknown was under way.
