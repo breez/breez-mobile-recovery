@@ -169,6 +169,35 @@ func TestRestoredBackupsLastOpened(t *testing.T) {
 	}
 }
 
+// The list of restored backups carries what each funds screen showed last,
+// On-chain without its unconfirmed part (it may be a Pending payout on its
+// way), and whether a close is still settling; nothing for one never shown.
+func TestRestoredBackupsLastFunds(t *testing.T) {
+	root := t.TempDir()
+	c := testCore(t, root)
+	for name, marker := range map[string]string{nodeA: "A", nodeB: "B"} {
+		if err := place(t, c, name, marker, false); err != nil {
+			t.Fatal(err)
+		}
+	}
+	at := time.Date(2026, 9, 24, 16, 40, 0, 0, time.UTC)
+	st := &Status{InChannels: 1000, InPending: 200, OnchainConfirmed: 300, OnchainUnconfirmed: 50, Unresolved: 1}
+	if err := saveLastFunds(c.backupDir(nodeA), st, at); err != nil {
+		t.Fatal(err)
+	}
+	got := map[string]RestoredBackup{}
+	for _, b := range c.RestoredBackups() {
+		got[b.Name] = b
+	}
+	want := LastFunds{InChannels: 1000, Pending: 200, Onchain: 300, Settling: true, At: at}
+	if f := got[nodeA].Funds; f == nil || *f != want {
+		t.Errorf("node A funds %+v, want %+v", f, want)
+	}
+	if f := got[nodeB].Funds; f != nil {
+		t.Errorf("node B funds %+v, want none", f)
+	}
+}
+
 func TestRestoreAgainMovesTheOldFolderAside(t *testing.T) {
 	root := t.TempDir()
 	c := testCore(t, root)

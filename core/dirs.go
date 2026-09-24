@@ -117,6 +117,8 @@ type RestoredBackup struct {
 	// LastOpened is when its node last ran here (the time of its lnd log);
 	// nil if it never did.
 	LastOpened *time.Time `json:"lastOpened,omitempty"`
+	// Funds is what its funds screen showed last; nil if it never showed.
+	Funds *LastFunds `json:"funds,omitempty"`
 }
 
 // RestoredBackups lists the backups restored on this computer.
@@ -130,6 +132,12 @@ func (c *Core) RestoredBackups() []RestoredBackup {
 			if fi, err := os.Stat(lndLogPath(dir, c.cfg.Network)); err == nil {
 				t := fi.ModTime()
 				rb.LastOpened = &t
+			}
+			if data, err := os.ReadFile(filepath.Join(dir, lastFundsFile)); err == nil {
+				var f LastFunds
+				if json.Unmarshal(data, &f) == nil {
+					rb.Funds = &f
+				}
 			}
 			out = append(out, rb)
 		}

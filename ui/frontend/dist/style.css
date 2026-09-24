@@ -268,6 +268,7 @@ input.invalid { border-color: var(--err); }
 .item-main { flex: 1; min-width: 0; }
 .item-title { font-weight: 600; }
 .item-sub { color: var(--muted); font-size: 13px; font-family: var(--mono); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.item-amount { font-family: var(--mono); font-weight: 600; font-size: 14px; white-space: nowrap; }
 .tag {
   font-size: 12px; font-weight: 600; padding: 3px 8px; border-radius: 8px; white-space: nowrap;
   background: var(--primary-soft); color: var(--primary-ink);

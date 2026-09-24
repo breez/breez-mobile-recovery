@@ -900,7 +900,35 @@ func (c *Core) Status(ctx context.Context) (*Status, error) {
 			c.progressf("Channel %s: %d sat is dust (limit %d), not counted.", ch.ChannelPoint, ch.LocalBalance, ch.DustLimit)
 		}
 	}
+	// For the start screen's list of restored backups; a failed write only
+	// leaves that list without the amount.
+	_ = saveLastFunds(c.dir(), st, time.Now())
 	return st, nil
+}
+
+// lastFundsFile keeps what a backup's funds screen showed last.
+const lastFundsFile = "last-funds.json"
+
+// LastFunds is what a restored backup's funds screen showed last. On-chain
+// is the confirmed part only: while a close's payout is unconfirmed the
+// same money can be in Pending and in the unconfirmed balance, which the
+// screen shows apart but a sum would count twice.
+type LastFunds struct {
+	InChannels int64 `json:"inChannels"`
+	Pending    int64 `json:"pending"`
+	Onchain    int64 `json:"onchain"`
+	// Settling is set while a close whose payout is not known yet is being
+	// settled: the tiles can read zero with money still to come.
+	Settling bool      `json:"settling"`
+	At       time.Time `json:"at"`
+}
+
+func saveLastFunds(dir string, st *Status, at time.Time) error {
+	data, err := json.Marshal(LastFunds{st.InChannels, st.InPending, st.OnchainConfirmed, st.Unresolved > 0, at})
+	if err != nil {
+		return err
+	}
+	return writeFileAtomic(filepath.Join(dir, lastFundsFile), data)
 }
 
 // ValidateAddress checks a bitcoin address for the configured network. It

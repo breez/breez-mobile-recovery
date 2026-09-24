@@ -96,8 +96,8 @@
     RestoreOther: async () => false,
     ShowWindow: async () => {},
     RestoredApps: async () => hasNode ? [
-      { name: "02e66bcb1f4a9d6b3c2a7f8e9d0c1b2a3f4e5d6c7b8a9f0e1d2c3b4a5f6e7d8c9b", dir: "/home/roys/.breez-recovery/backups/02e66bcb1f4a9d6b3c2a7f8e9d0c1b2a3f4e5d6c7b8a9f0e1d2c3b4a5f6e7d8c9b", current: true, lastOpened: "2026-09-24T12:01:00Z" },
-      { name: "02f8439e7a6b5c4d3e2f1a0b9c8d7e6f5a4b3c2d1e0f9a8b7c6d5e4f3a2b1c0d9e", dir: "/home/roys/.breez-recovery/backups/02f8439e7a6b5c4d3e2f1a0b9c8d7e6f5a4b3c2d1e0f9a8b7c6d5e4f3a2b1c0d9e", current: false, lastOpened: "2026-09-24T13:40:00Z" },
+      { name: "02e66bcb1f4a9d6b3c2a7f8e9d0c1b2a3f4e5d6c7b8a9f0e1d2c3b4a5f6e7d8c9b", dir: "/home/roys/.breez-recovery/backups/02e66bcb1f4a9d6b3c2a7f8e9d0c1b2a3f4e5d6c7b8a9f0e1d2c3b4a5f6e7d8c9b", current: true, lastOpened: "2026-09-24T12:01:00Z", funds: { inChannels: 0, pending: 0, onchain: 0, settling: false, at: "2026-09-24T12:01:00Z" } },
+      { name: "02f8439e7a6b5c4d3e2f1a0b9c8d7e6f5a4b3c2d1e0f9a8b7c6d5e4f3a2b1c0d9e", dir: "/home/roys/.breez-recovery/backups/02f8439e7a6b5c4d3e2f1a0b9c8d7e6f5a4b3c2d1e0f9a8b7c6d5e4f3a2b1c0d9e", current: false, lastOpened: "2026-09-24T13:40:00Z", funds: { inChannels: 0, pending: 15721, onchain: 1581900, at: "2026-09-24T13:40:00Z" } },
       { name: "zip-4c1d9a7e22b0f513", dir: "/home/roys/.breez-recovery/backups/zip-4c1d9a7e22b0f513", current: false },
     ] : [],
     UseRestored: async () => false,

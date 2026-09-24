@@ -809,6 +809,11 @@ func (a *App) BroadcastSweep(confTarget int) (string, error) {
 	err := a.run("broadcast sweep", func(ctx context.Context) error {
 		var err error
 		txid, err = a.c().BroadcastSweep(confTarget)
+		if err == nil {
+			// The restored apps list shows what a backup still holds; the
+			// sent funds have left it. Only the list depends on this.
+			_, _ = a.c().Status(ctx)
+		}
 		return err
 	})
 	return txid, err

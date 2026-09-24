@@ -163,6 +163,15 @@
       main.appendChild(el("div", "item-title", a.lastOpened ? "Last opened " + fmtDate(a.lastOpened) : "Not opened yet"));
       main.appendChild(el("div", "item-sub", a.name.startsWith("zip-") ? "From a backup file" : a.name));
       item.appendChild(main);
+      // What its funds screen showed last; nothing when that was nothing,
+      // "settling" when a close with a payout still unknown was under way.
+      const f = a.funds;
+      const total = f ? f.inChannels + f.pending + f.onchain : 0;
+      if (total > 0 || (f && f.settling)) {
+        const amount = el("span", "item-amount" + (total > 0 ? "" : " muted"), total > 0 ? fmtSat(total) : "settling");
+        amount.title = "Last known funds, " + fmtDate(f.at);
+        item.appendChild(amount);
+      }
       if (a.current) item.appendChild(el("span", "tag", "In use"));
       item.addEventListener("click", () => {
         ui.useName = a.name;
