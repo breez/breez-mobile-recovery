@@ -885,9 +885,9 @@
     // A relaunched copy starts hidden: show it now, on the right screen.
     api.ShowWindow();
     if (ui.state.autoContinue) {
-      // Relaunched by the app itself after preparing the node: give the
-      // previous copy a moment to release the work folder, then carry on.
-      await new Promise((r) => setTimeout(r, 4000));
+      // Relaunched by the app itself after preparing the node. This copy
+      // only got this far once the old one had exited: core.New waits for
+      // the work folder lock, which the old copy held to the end.
       startSync();
     }
   }

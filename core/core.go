@@ -150,13 +150,6 @@ type Core struct {
 	icloud  *icloudClient
 	records map[string]ckRecord
 	sweep   *sweepPlan
-	// restored is set when this process ran a restore. The library's
-	// services are torn down by the restore and starting them again in
-	// the same process crashes (the account service subscribes to
-	// invoices before lnd serves and then reads a nil stream), so the
-	// node is started by a fresh process.
-	restored bool
-
 	// nodeDir is the folder of the backup in use, see dirs.go.
 	nodeDir   string
 	layoutErr error
@@ -404,7 +397,6 @@ func (c *Core) GoogleRestore(ctx context.Context, nodeID, mnemonic string, force
 		return err
 	}
 	c.progressf("Backup restored into %s.", c.dir())
-	c.restored = true
 	return nil
 }
 
@@ -471,7 +463,6 @@ func (c *Core) ICloudRestore(ctx context.Context, nodeID, mnemonic string, force
 		return err
 	}
 	c.progressf("Backup restored into %s.", c.dir())
-	c.restored = true
 	return nil
 }
 
@@ -513,7 +504,6 @@ func (c *Core) ZipRestore(zipPath, mnemonic string, force bool) error {
 		return err
 	}
 	c.progressf("Backup restored into %s.", c.dir())
-	c.restored = true
 	return nil
 }
 
@@ -581,10 +571,6 @@ func (c *Core) startNode(ctx context.Context) error {
 	}
 	if !c.HasRestoredNode() {
 		return fmt.Errorf("no restored backup in %s", c.cfg.WorkDir)
-	}
-	if c.restored {
-		c.progressf("Backup restored; the app restarts to open it...")
-		return ErrRestartRequired
 	}
 	svc := c.svc
 	if svc == nil {

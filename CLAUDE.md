@@ -97,7 +97,10 @@ Every value is rendered with textContent; keep it that way.
   2026-09-17 crash). Because of the binding above the library must not be
   initialised before the backup is chosen: Drive backups are listed with a
   direct read-only Drive call (core/drive.go), not through the library,
-  and the library is initialised in `GoogleRestore` on the chosen folder.
+  and the library is initialised when the node first starts, on the
+  chosen folder. A restore never touches the library, so the node starts
+  in the process that restored (no restart after a restore since
+  2026-09-24).
   Switching backups after the library ran needs a program restart
   (`App.RestoreOther` relaunches with `BREEZ_RECOVERY_RELAUNCH=restore-other`).
   Restoring a backup that is already there moves the old folder aside
@@ -335,13 +338,15 @@ Every value is rendered with textContent; keep it that way.
   encrypted SCB: chacha20poly1305: message authentication failed"), which
   takes the library down with it and then the process panics (2026-09-17,
   Roy restoring his 2022 backup over the 2019 one).
-- The library cannot be started again in a process that stopped it: after
-  the address look-ahead it hangs, and after a restore it crashes (the
-  library's account service subscribes to invoices before lnd serves and
-  then reads a nil stream: breez/breez account/payments.go:1310, seen
-  2026-09-17 when Roy picked a second backup). Both paths therefore return
-  ErrRestartRequired and the app relaunches itself; the CLI restores and
-  exits, so it is not affected.
+- The library cannot be started again in a process that stopped it (after
+  the address look-ahead it hung), so the paths that need a stopped node
+  return ErrRestartRequired and the app relaunches itself; the CLI exits
+  and asks to be run again. The 2026-09-17 crash when Roy picked a second
+  backup came from the foreign `channel.backup` above: lnd aborts in
+  server.Start, SubscribeInvoices then fails and the account service
+  reads the nil stream (breez/breez account/payments.go:1303-1310). That
+  nil read can happen on any start where the subscription fails; one
+  folder per backup removed this cause of it.
 - History (core/history.go) is a ledger with one entry per money
   movement. Sources: the app's own payment list (`bindings.GetPayments`,
   the same list Breez mobile showed, with descriptions), lnd's closed and
