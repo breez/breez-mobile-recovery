@@ -47,9 +47,10 @@ const (
 var icloudAPIToken = "c13eed55a5a618a6788831fc0b193658b39b46659491e7e6f2fd7a03467066f6"
 
 type icloudClient struct {
-	apiToken string
-	session  string // ckWebAuthToken
-	http     *http.Client
+	apiToken    string
+	session     string // ckWebAuthToken
+	sessionPath string // where the session is cached; empty: not cached
+	http        *http.Client
 }
 
 func (c *icloudClient) url(database, subpath string) string {
@@ -76,6 +77,7 @@ func (c *icloudClient) post(database, subpath string, body interface{}, dst inte
 		return 0, withoutURL(err)
 	}
 	defer res.Body.Close()
+	c.rotate(res)
 	data, err := io.ReadAll(res.Body)
 	if err != nil {
 		return res.StatusCode, fmt.Errorf("cloudkit %s: read the reply: %w", subpath, err)
@@ -97,6 +99,34 @@ func (c *icloudClient) post(database, subpath string, body interface{}, dst inte
 	return res.StatusCode, nil
 }
 
+// rotate takes the session CloudKit sends back with a reply. Apple's docs
+// make a ckWebAuthToken good for one round trip, the reply carrying the
+// token for the next request; CloudKit JS reads it from these two headers
+// (getCKSession in cdn.apple-cloudkit.com/ck/2/cloudkit.js) and saves it.
+func (c *icloudClient) rotate(res *http.Response) {
+	if c.session == "" {
+		return
+	}
+	next := res.Header.Get("X-Apple-CloudKit-Web-Auth-Token")
+	if next == "" {
+		next = res.Header.Get("X-Apple-CloudKit-Session")
+	}
+	if next == "" || next == c.session {
+		return
+	}
+	c.session = next
+	c.saveSession()
+}
+
+func (c *icloudClient) saveSession() {
+	if c.sessionPath == "" {
+		return
+	}
+	if data, err := json.Marshal(struct{ Session string }{c.session}); err == nil {
+		_ = os.WriteFile(c.sessionPath, data, 0600)
+	}
+}
+
 // withoutURL strips the request URL from a network error: it carries the
 // session token in its query, and Go prints the whole URL, which would put
 // the token into the log the user saves for support.
@@ -111,14 +141,14 @@ func withoutURL(err error) error {
 // icloudSignIn returns a client with a valid user session, reusing a cached
 // one when it still works and running the browser sign-in otherwise.
 func (c *Core) icloudSignIn(ctx context.Context) (*icloudClient, error) {
-	client := &icloudClient{apiToken: c.cfg.ICloudAPIToken, http: &http.Client{Timeout: 60 * time.Second}}
+	sessionPath := filepath.Join(c.cfg.WorkDir, icloudTokenFile)
+	client := &icloudClient{apiToken: c.cfg.ICloudAPIToken, sessionPath: sessionPath, http: &http.Client{Timeout: 60 * time.Second}}
 	if client.apiToken == "" {
 		return nil, errors.New("no CloudKit API token configured")
 	}
 	if err := os.MkdirAll(c.cfg.WorkDir, 0700); err != nil {
 		return nil, err
 	}
-	sessionPath := filepath.Join(c.cfg.WorkDir, icloudTokenFile)
 	if data, err := os.ReadFile(sessionPath); err == nil {
 		var cached struct{ Session string }
 		if json.Unmarshal(data, &cached) == nil && cached.Session != "" {
@@ -159,15 +189,16 @@ func (c *Core) icloudSignIn(ctx context.Context) (*icloudClient, error) {
 	if ok, err := client.sessionValid(); !ok {
 		return nil, fmt.Errorf("apple sign-in did not yield a usable session: %v", err)
 	}
-	if data, err := json.Marshal(struct{ Session string }{session}); err == nil {
-		_ = os.WriteFile(sessionPath, data, 0600)
-	}
+	client.saveSession()
 	return client, nil
 }
 
 // ForgetICloud removes the cached Apple session so the next attempt asks
 // again in the browser.
 func (c *Core) ForgetICloud() {
+	if c.icloud != nil {
+		c.icloud.sessionPath = "" // a rotated session must not write it back
+	}
 	os.Remove(filepath.Join(c.cfg.WorkDir, icloudTokenFile))
 }
 
@@ -181,6 +212,7 @@ func (c *icloudClient) sessionValid() (bool, error) {
 		return false, withoutURL(err)
 	}
 	defer res.Body.Close()
+	c.rotate(res)
 	return res.StatusCode == 200, fmt.Errorf("HTTP %d", res.StatusCode)
 }
 
@@ -200,18 +232,15 @@ func (c *Core) icloudLoopback(ctx context.Context, signInURL string) (string, er
 			http.NotFound(w, r)
 			return
 		}
-		q := r.URL.Query()
-		for _, k := range []string{"ckSession", "ckWebAuthToken"} {
-			if v := q.Get(k); v != "" {
-				// Send the browser on to the hosted page so the token
-				// leaves the address bar, then hand the token over.
-				http.Redirect(w, r, SignedInPageURL, http.StatusFound)
-				select {
-				case tokenCh <- v:
-				default:
-				}
-				return
+		if v := callbackToken(r.URL.Query()); v != "" {
+			// Send the browser on to the hosted page so the token
+			// leaves the address bar, then hand the token over.
+			http.Redirect(w, r, SignedInPageURL, http.StatusFound)
+			select {
+			case tokenCh <- v:
+			default:
 			}
+			return
 		}
 		// No token in the query: it may be in the fragment, which only the
 		// browser can see. Forward it as a query string.
@@ -235,6 +264,19 @@ if(h){location.replace(location.pathname+'?'+h);}else{document.write('No sign-in
 	case <-ctx.Done():
 		return "", ctx.Err()
 	}
+}
+
+// callbackToken reads the session token from the callback query. The token
+// is base64 and never holds a space, but a '+' that Apple leaves unencoded
+// becomes one when the callback page or this handler decodes the query
+// (URLSearchParams and url.Values both read '+' as a space): put it back.
+func callbackToken(q url.Values) string {
+	for _, k := range []string{"ckSession", "ckWebAuthToken"} {
+		if v := q.Get(k); v != "" {
+			return strings.ReplaceAll(v, " ", "+")
+		}
+	}
+	return ""
 }
 
 type ckRecord struct {
