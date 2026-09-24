@@ -26,6 +26,8 @@
     logCount: 0,
     logOpen: false,
     busy: false,
+    useName: "",          // restored backup picked on the start screen
+    currentName: "",      // restored backup in use
   };
 
   // ---------------------------------------------------------------- helpers
@@ -94,7 +96,8 @@
     $("#working-title").textContent = title;
     $("#working-message").textContent = "";
     $("#working-recent").innerHTML = "";
-    $("#working-cancel").classList.toggle("hidden", cancellable === false);
+    // The whole row, so an absent Cancel leaves no gap under the text.
+    $("#working-cancel").parentElement.classList.toggle("hidden", cancellable === false);
     show("working");
   }
 
@@ -131,6 +134,41 @@
     $("#welcome-existing").classList.toggle("hidden", !ui.state.hasNode);
     $("#welcome-fresh").classList.toggle("hidden", ui.state.hasNode);
     $("#existing-node-path").textContent = ui.state.nodeDir || ui.state.workDir;
+    await renderRestored();
+  }
+
+  // The apps restored on this computer: one shows as a summary, several as a
+  // list to pick the one to continue with, the last opened first.
+  async function renderRestored() {
+    const apps = (ui.state.hasNode && (await api.RestoredApps())) || [];
+    const opened = (a) => (a.lastOpened ? new Date(a.lastOpened).getTime() : 0);
+    apps.sort((x, y) => opened(y) - opened(x));
+    const many = apps.length > 1;
+    const current = apps.find((a) => a.current);
+    ui.currentName = current ? current.name : "";
+    if (!apps.some((a) => a.name === ui.useName)) ui.useName = ui.currentName;
+    $("#existing-summary").classList.toggle("hidden", many);
+    $("#restored-list").classList.toggle("hidden", !many);
+    $("#existing-lead").textContent = many
+      ? "Breez apps restored on this computer. Choose the one to continue with, or restore another backup."
+      : "A Breez app restored earlier is on this computer. Continue to sync it and move the funds, or restore another backup.";
+    const list = $("#restored-list");
+    list.innerHTML = "";
+    if (!many) return;
+    apps.forEach((a) => {
+      const item = el("div", "item" + (a.name === ui.useName ? " selected" : ""));
+      item.title = a.dir;
+      const main = el("div", "item-main");
+      main.appendChild(el("div", "item-title", a.lastOpened ? "Last opened " + fmtDate(a.lastOpened) : "Not opened yet"));
+      main.appendChild(el("div", "item-sub", a.name.startsWith("zip-") ? "From a backup file" : a.name));
+      item.appendChild(main);
+      if (a.current) item.appendChild(el("span", "tag", "In use"));
+      item.addEventListener("click", () => {
+        ui.useName = a.name;
+        $$("#restored-list .item").forEach((x) => x.classList.toggle("selected", x === item));
+      });
+      list.appendChild(item);
+    });
   }
 
   async function applySettings() {
@@ -673,7 +711,22 @@
   const actions = {
     "dismiss-error": clearError,
     "start": () => { ui.force = false; show("source"); },
-    "continue-existing": () => startSync(),
+    "continue-existing": async () => {
+      if (ui.busy) return; // a second click while switching
+      if (ui.useName && ui.useName !== ui.currentName) {
+        setBusy(true);
+        let restarting = false;
+        try {
+          // After a node ran in this process the app restarts to switch.
+          restarting = await api.UseRestored(ui.useName);
+          if (!restarting) await refreshState();
+        } finally {
+          if (!restarting) setBusy(false);
+        }
+        if (restarting) { working("Restarting", false); return; }
+      }
+      startSync();
+    },
     "restore-other": async () => {
       // Each backup has a folder of its own, so nothing is overwritten. When
       // the node already ran, the app restarts itself and opens on this step.
@@ -787,6 +840,7 @@
     } else {
       show(ui.state.restoreOther ? "source" : "welcome");
     }
+    if (ui.state.switchError) showError(ui.state.switchError);
     // A relaunched copy starts hidden: show it now, on the right screen.
     api.ShowWindow();
     if (ui.state.autoContinue) {

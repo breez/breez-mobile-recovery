@@ -207,7 +207,11 @@ func (c *Core) LogPath() string {
 	if c.dir() == "" {
 		return ""
 	}
-	return filepath.Join(c.dir(), "logs", "bitcoin", c.cfg.Network, "lnd.log")
+	return lndLogPath(c.dir(), c.cfg.Network)
+}
+
+func lndLogPath(dir, network string) string {
+	return filepath.Join(dir, "logs", "bitcoin", network, "lnd.log")
 }
 
 func (c *Core) progressf(format string, args ...interface{}) {

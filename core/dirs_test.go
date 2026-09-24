@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	bolt "go.etcd.io/bbolt"
 )
@@ -130,6 +131,41 @@ func TestBackupsGetTheirOwnFolders(t *testing.T) {
 	}
 	if got := len(c2.RestoredBackups()); got != 2 {
 		t.Fatalf("%d restored backups, want 2", got)
+	}
+}
+
+// The start screen tells restored backups apart by when their node last ran.
+func TestRestoredBackupsLastOpened(t *testing.T) {
+	root := t.TempDir()
+	c := testCore(t, root)
+	for name, marker := range map[string]string{nodeA: "A", nodeB: "B"} {
+		if err := place(t, c, name, marker, false); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := c.UseBackup(nodeB); err != nil {
+		t.Fatal(err)
+	}
+	logA := lndLogPath(c.backupDir(nodeA), "mainnet")
+	opened := time.Date(2026, 9, 24, 12, 1, 0, 0, time.UTC)
+	if err := os.MkdirAll(filepath.Dir(logA), 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(logA, []byte("lnd"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chtimes(logA, opened, opened); err != nil {
+		t.Fatal(err)
+	}
+	got := map[string]RestoredBackup{}
+	for _, b := range c.RestoredBackups() {
+		got[b.Name] = b
+	}
+	if a := got[nodeA]; a.LastOpened == nil || !a.LastOpened.Equal(opened) || a.Current {
+		t.Errorf("node A: %+v", a)
+	}
+	if b := got[nodeB]; b.LastOpened != nil || !b.Current {
+		t.Errorf("node B: %+v", b)
 	}
 }
 

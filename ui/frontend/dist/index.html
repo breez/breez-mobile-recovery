@@ -15,17 +15,16 @@
     <div class="topbar-right">
       <span id="version" class="version"></span>
       <button id="log-toggle" class="btn btn-ghost btn-sm" type="button">
-        Log <span id="log-count" class="badge">0</span>
+        Logs <span id="log-count" class="badge">0</span>
       </button>
     </div>
   </header>
 
-  <div id="error" class="error-banner hidden">
-    <div class="error-text" id="error-text"></div>
-    <button class="btn btn-ghost btn-sm" type="button" data-action="dismiss-error">Dismiss</button>
-  </div>
-
   <main id="main">
+    <div id="error" class="error-banner hidden">
+      <div class="error-text" id="error-text"></div>
+      <button class="btn btn-ghost btn-sm" type="button" data-action="dismiss-error">Dismiss</button>
+    </div>
 
     <!-- 1. Welcome -->
     <section class="screen" data-screen="welcome">
@@ -42,18 +41,19 @@
             <li><strong>Move the funds</strong> to a bitcoin address you control.</li>
           </ol>
           <div class="actions">
-            <button class="btn btn-primary btn-lg" type="button" data-action="start">Get started</button>
+            <button class="btn btn-primary" type="button" data-action="start">Get started</button>
           </div>
         </div>
         <div id="welcome-existing" class="hidden">
           <h1>Continue your recovery</h1>
-          <p class="lead">A Breez app restored earlier is on this computer. Continue to sync it and move the funds, or restore another backup.</p>
-          <div class="summary">
+          <p class="lead" id="existing-lead">A Breez app restored earlier is on this computer. Continue to sync it and move the funds, or restore another backup.</p>
+          <div class="summary" id="existing-summary">
             <div><span class="muted">Restored app folder</span><span class="mono" id="existing-node-path"></span></div>
           </div>
+          <div id="restored-list" class="list hidden"></div>
           <div class="actions">
-            <button class="btn btn-secondary btn-lg" type="button" data-action="restore-other">Restore another backup</button>
-            <button class="btn btn-primary btn-lg" type="button" data-action="continue-existing">Continue recovery</button>
+            <button class="btn btn-secondary" type="button" data-action="restore-other">Restore another backup</button>
+            <button class="btn btn-primary" type="button" data-action="continue-existing">Continue recovery</button>
           </div>
         </div>
         <details class="advanced">
@@ -109,7 +109,7 @@
 
     <!-- 3. Sign in -->
     <section class="screen" data-screen="signin">
-      <div class="card">
+      <div class="card card-status">
         <div class="spinner"></div>
         <h1 id="signin-title">Sign in</h1>
         <p class="lead" id="signin-text">A browser window has opened. Sign in there, then come back here.</p>
@@ -159,7 +159,7 @@
 
     <!-- 6. Working (generic progress) -->
     <section class="screen" data-screen="working">
-      <div class="card">
+      <div class="card card-status">
         <div class="spinner"></div>
         <h1 id="working-title">Working</h1>
         <p class="lead" id="working-message"></p>
@@ -255,9 +255,6 @@
         <div id="history-warnings"></div>
         <div id="history-list" class="ledger"></div>
         <p id="history-foot" class="muted small"></p>
-        <div class="actions">
-          <button class="btn btn-ghost btn-back" type="button" data-action="back-wallet">Back to funds</button>
-        </div>
       </div>
     </section>
 
@@ -291,9 +288,11 @@
     <!-- 12. Done -->
     <section class="screen" data-screen="done">
       <div class="card">
-        <div class="checkmark"></div>
-        <h1>Transaction sent</h1>
-        <p class="lead">The funds are on their way. It confirms within the fee target you chose.</p>
+        <div class="status">
+          <div class="checkmark"></div>
+          <h1>Transaction sent</h1>
+          <p class="lead">The funds are on their way. It confirms within the fee target you chose.</p>
+        </div>
         <div class="linkbox">
           <div class="muted">Transaction id</div>
           <div class="row">
@@ -313,7 +312,7 @@
 
   <aside id="log-panel" class="log-panel collapsed">
     <div class="log-head">
-      <strong>Log</strong>
+      <strong>Logs</strong>
       <span class="muted small" id="log-path"></span>
       <div class="row">
         <button class="btn btn-secondary btn-sm" type="button" data-action="save-log">Save log</button>

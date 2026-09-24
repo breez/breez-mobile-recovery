@@ -95,6 +95,12 @@
     BroadcastSweep: async () => { await sleep(600); return "5f4e3d2c1b0a9f8e7d6c5b4a3f2e1d0c9b8a7f6e5d4c3b2a1f0e9d8c7b6a5f4e"; },
     RestoreOther: async () => false,
     ShowWindow: async () => {},
+    RestoredApps: async () => hasNode ? [
+      { name: "02e66bcb1f4a9d6b3c2a7f8e9d0c1b2a3f4e5d6c7b8a9f0e1d2c3b4a5f6e7d8c9b", dir: "/home/roys/.breez-recovery/backups/02e66bcb1f4a9d6b3c2a7f8e9d0c1b2a3f4e5d6c7b8a9f0e1d2c3b4a5f6e7d8c9b", current: true, lastOpened: "2026-09-24T12:01:00Z" },
+      { name: "02f8439e7a6b5c4d3e2f1a0b9c8d7e6f5a4b3c2d1e0f9a8b7c6d5e4f3a2b1c0d9e", dir: "/home/roys/.breez-recovery/backups/02f8439e7a6b5c4d3e2f1a0b9c8d7e6f5a4b3c2d1e0f9a8b7c6d5e4f3a2b1c0d9e", current: false, lastOpened: "2026-09-24T13:40:00Z" },
+      { name: "zip-4c1d9a7e22b0f513", dir: "/home/roys/.breez-recovery/backups/zip-4c1d9a7e22b0f513", current: false },
+    ] : [],
+    UseRestored: async () => false,
     Cancel: async () => {}, CopyText: async () => {}, OpenURL: async () => {},
     SaveHistory: async () => "/home/roys/breez-history-2026-09-17.csv",
     SaveLog: async () => "/home/roys/breez-recovery-2026-09-16.log", CopyLog: async () => {}, OpenWorkDir: async () => {},

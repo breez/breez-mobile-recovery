@@ -114,6 +114,9 @@ type RestoredBackup struct {
 	Name    string `json:"name"`
 	Dir     string `json:"dir"`
 	Current bool   `json:"current"`
+	// LastOpened is when its node last ran here (the time of its lnd log);
+	// nil if it never did.
+	LastOpened *time.Time `json:"lastOpened,omitempty"`
 }
 
 // RestoredBackups lists the backups restored on this computer.
@@ -123,7 +126,12 @@ func (c *Core) RestoredBackups() []RestoredBackup {
 	for _, e := range entries {
 		dir := c.backupDir(e.Name())
 		if e.IsDir() && backupNameRE.MatchString(e.Name()) && hasNode(dir, c.cfg.Network) {
-			out = append(out, RestoredBackup{Name: e.Name(), Dir: dir, Current: dir == c.nodeDir})
+			rb := RestoredBackup{Name: e.Name(), Dir: dir, Current: dir == c.nodeDir}
+			if fi, err := os.Stat(lndLogPath(dir, c.cfg.Network)); err == nil {
+				t := fi.ModTime()
+				rb.LastOpened = &t
+			}
+			out = append(out, rb)
 		}
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].Name < out[j].Name })

@@ -10,6 +10,7 @@ import (
 	"runtime"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/breez/breez-mobile-recovery/core"
@@ -38,11 +39,22 @@ type App struct {
 	lastHistory *core.History // what the History screen shows, for export
 
 	showOnce sync.Once // ShowWindow
+
+	relaunching atomic.Bool // a new copy is on its way; never start two
+	switchErr   string      // why the switch this copy was started for failed
 }
 
 func newApp() *App {
 	a := &App{cfg: core.DefaultConfig(), log: newLogBuffer(20000)}
 	a.core = core.New(a.cfg, &reporter{app: a})
+	// Restarted by UseRestored to continue with another restored backup:
+	// switch before the page asks what is in use.
+	if name, ok := strings.CutPrefix(os.Getenv(relaunchEnv), "use:"); ok {
+		if err := a.core.UseBackup(name); err != nil {
+			a.switchErr = "could not switch to the restored backup: " + err.Error()
+			a.log.tool(a.switchErr)
+		}
+	}
 	return a
 }
 
@@ -252,6 +264,7 @@ type State struct {
 	HasNode          bool   `json:"hasNode"`
 	RestoreOther     bool   `json:"restoreOther"` // set after a self-restart: go straight to choosing a backup
 	AutoContinue     bool   `json:"autoContinue"` // set after a self-restart: go straight to sync
+	SwitchError      string `json:"switchError"`  // a restart to another restored backup that failed
 	LogPath          string `json:"logPath"`
 	GoogleConfigured bool   `json:"googleConfigured"`
 }
@@ -261,14 +274,18 @@ func (a *App) GetState() State {
 	c := a.c()
 	cfg := c.Config()
 	return State{
-		Version:          version,
-		OS:               runtime.GOOS,
-		WorkDir:          cfg.WorkDir,
-		NodeDir:          c.NodeDir(),
-		Peers:            cfg.Peers,
-		HasNode:          c.HasRestoredNode(),
-		RestoreOther:     os.Getenv(relaunchEnv) == "restore-other",
-		AutoContinue:     os.Getenv(relaunchEnv) == "continue" && c.HasRestoredNode(),
+		Version:      version,
+		OS:           runtime.GOOS,
+		WorkDir:      cfg.WorkDir,
+		NodeDir:      c.NodeDir(),
+		Peers:        cfg.Peers,
+		HasNode:      c.HasRestoredNode(),
+		RestoreOther: os.Getenv(relaunchEnv) == "restore-other",
+		// A restart to another restored backup carries on with it, as the
+		// Continue recovery press that caused it asked.
+		AutoContinue: (os.Getenv(relaunchEnv) == "continue" || (strings.HasPrefix(os.Getenv(relaunchEnv), "use:") && a.switchErr == "")) &&
+			c.HasRestoredNode(),
+		SwitchError:      a.switchErr,
 		LogPath:          c.LogPath(),
 		GoogleConfigured: cfg.GoogleClientID != "",
 	}
@@ -477,6 +494,37 @@ func (a *App) RestoreOther(ask bool) (bool, error) {
 	return true, nil
 }
 
+// RestoredApps lists the backups restored on this computer.
+func (a *App) RestoredApps() []core.RestoredBackup { return a.c().RestoredBackups() }
+
+// UseRestored continues with another backup restored on this computer.
+// Before a node ran in this process it switches at once; after, the app
+// restarts on the start screen with that backup in use, and reports true.
+func (a *App) UseRestored(name string) (bool, error) {
+	c := a.c()
+	if !c.LibraryBound() {
+		if !a.opMu.TryLock() {
+			return false, errBusy
+		}
+		defer a.opMu.Unlock()
+		return false, c.UseBackup(name)
+	}
+	if !c.IsRestored(name) {
+		return false, fmt.Errorf("no restored backup %q", name)
+	}
+	a.opMu.Lock()
+	defer a.opMu.Unlock()
+	wruntime.EventsEmit(a.ctx, "restarting")
+	a.log.tool("stopping the node to continue with another restored backup")
+	if !c.StopWithin(20 * time.Second) {
+		a.log.tool("the node did not stop cleanly; the program exits and starts again")
+	}
+	if !a.relaunch("use:" + name) {
+		return false, errRelaunchFailed
+	}
+	return true, nil
+}
+
 // StartAndSync starts the node, waits for chain sync (emitting "sync"
 // events) and returns the wallet status.
 func (a *App) StartAndSync() (*core.Status, error) {
@@ -518,8 +566,9 @@ func (a *App) StartAndSync() (*core.Status, error) {
 }
 
 // relaunchEnv tells a copy of the program started by relaunch what to do
-// first: "continue" the sync, or open on the backup sources
-// ("restore-other").
+// first: "continue" the sync, open on the backup sources ("restore-other"),
+// or open on the start screen with another restored backup in use
+// ("use:<name>").
 const relaunchEnv = "BREEZ_RECOVERY_RELAUNCH"
 
 // windowEnv hands the window's place and size ("x,y,w,h") to the copy
@@ -603,8 +652,12 @@ var errRelaunchFailed = errors.New("the app could not restart itself: close it a
 // reports whether the copy started. Used when the node or the library
 // needs a program restart.
 func (a *App) relaunch(then string) bool {
+	if !a.relaunching.CompareAndSwap(false, true) {
+		return true // a second click: the first one's copy is on its way
+	}
 	exe, err := os.Executable()
 	if err != nil {
+		a.relaunching.Store(false)
 		a.relaunchFailed(err)
 		return false
 	}
@@ -622,6 +675,7 @@ func (a *App) relaunch(then string) bool {
 		"BREEZ_RECOVERY_WORKDIR="+workDir,
 		"BREEZ_RECOVERY_PEERS="+peers)
 	if err := cmd.Start(); err != nil {
+		a.relaunching.Store(false)
 		a.relaunchFailed(err)
 		return false
 	}
