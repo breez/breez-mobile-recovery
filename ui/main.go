@@ -24,10 +24,12 @@ var icon []byte
 
 func main() {
 	app := newApp()
+	_, _, _, _, relaunched := relaunchWindow()
 	err := wails.Run(&options.App{
 		Title:            "Breez Recovery",
 		Width:            980,
 		Height:           700,
+		StartHidden:      relaunched, // app.ShowWindow shows it in place
 		MinWidth:         760,
 		MinHeight:        560,
 		BackgroundColour: &options.RGBA{R: 244, G: 247, B: 251, A: 1},

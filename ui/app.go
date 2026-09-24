@@ -36,6 +36,8 @@ type App struct {
 
 	historyMu   sync.Mutex
 	lastHistory *core.History // what the History screen shows, for export
+
+	showOnce sync.Once // ShowWindow
 }
 
 func newApp() *App {
@@ -49,6 +51,9 @@ func (a *App) startup(ctx context.Context) {
 	a.log.start(ctx)
 	a.log.tool(fmt.Sprintf("Breez Recovery %s on %s/%s", version, runtime.GOOS, runtime.GOARCH))
 	a.log.tool("Work dir: " + a.cfg.WorkDir)
+	// A relaunched copy starts hidden: never leave it that way, even if
+	// the page fails to ask for the window.
+	time.AfterFunc(5*time.Second, a.ShowWindow)
 }
 
 func (a *App) beforeClose(ctx context.Context) bool {
@@ -459,9 +464,8 @@ func (a *App) StartAndSync() (*core.Status, error) {
 	err := a.run("start node and sync", func(ctx context.Context) error {
 		c := a.c()
 		if err := c.StartNode(ctx); err != nil {
-			if errors.Is(err, core.ErrRestartRequired) {
-				a.relaunch("continue")
-				return err
+			if errors.Is(err, core.ErrRestartRequired) && !a.relaunch("continue") {
+				return errRelaunchFailed
 			}
 			return err
 		}
@@ -473,8 +477,8 @@ func (a *App) StartAndSync() (*core.Status, error) {
 			}
 			wruntime.EventsEmit(a.ctx, "sync", p)
 		})
-		if errors.Is(err, core.ErrRestartRequired) {
-			a.relaunch("continue")
+		if errors.Is(err, core.ErrRestartRequired) && !a.relaunch("continue") {
+			return errRelaunchFailed
 		}
 		if err != nil {
 			return err
@@ -498,24 +502,87 @@ func (a *App) StartAndSync() (*core.Status, error) {
 // ("restore-other").
 const relaunchEnv = "BREEZ_RECOVERY_RELAUNCH"
 
-// relaunch starts a fresh copy of this program, then quits this one. Used
-// when the node or the library needs a program restart.
-func (a *App) relaunch(then string) {
+// windowEnv hands the window's place and size ("x,y,w,h") to the copy
+// started by relaunch. That copy starts hidden and shows its window there,
+// on the screen it continues on, so the restart does not look like a new
+// app opening at the default size in the middle of the screen.
+const windowEnv = "BREEZ_RECOVERY_WINDOW"
+
+// relaunchWindow reads windowEnv; ok is false on a normal start.
+func relaunchWindow() (x, y, w, h int, ok bool) {
+	_, err := fmt.Sscanf(os.Getenv(windowEnv), "%d,%d,%d,%d", &x, &y, &w, &h)
+	return x, y, w, h, err == nil && w > 0 && h > 0
+}
+
+// ShowWindow shows the hidden window of a relaunched copy once the page
+// shows the screen it continues on. After a normal start the window is
+// already visible and this does nothing.
+func (a *App) ShowWindow() {
+	x, y, w, h, ok := relaunchWindow()
+	if !ok {
+		return
+	}
+	a.showOnce.Do(func() {
+		// A place off this screen (another screen, or a minimised window's
+		// place) keeps the default size too: its size may not fit here.
+		screens, _ := wruntime.ScreenGetAll(a.ctx)
+		if fitsScreen(screens, x, y, w, h) {
+			// WindowSetSize takes the outer size WindowGetSize gave; the
+			// Width/Height options are the inner one, a title bar smaller.
+			wruntime.WindowSetSize(a.ctx, w, h)
+			if runtime.GOOS == "windows" {
+				// ponytail: Windows reads the place in screen coordinates
+				// but sets it from the work area's corner, so it would
+				// drift by a top or left taskbar on each restart; centred
+				// there until a read-back correction is tried on Windows.
+				wruntime.WindowCenter(a.ctx)
+			} else {
+				wruntime.WindowSetPosition(a.ctx, x, y)
+			}
+		} else {
+			wruntime.WindowCenter(a.ctx)
+		}
+		wruntime.WindowShow(a.ctx)
+	})
+}
+
+// fitsScreen reports whether a window at x,y (relative to its screen) of
+// size w,h lies on the current screen. The old window may have been on
+// another screen, where the same offset can be off this one: centre then.
+func fitsScreen(screens []wruntime.Screen, x, y, w, h int) bool {
+	for _, s := range screens {
+		if s.IsCurrent {
+			return x >= 0 && y >= 0 && x+w <= s.Size.Width && y+h <= s.Size.Height
+		}
+	}
+	return false
+}
+
+// errRelaunchFailed replaces ErrRestartRequired when no new copy started:
+// the page shows "Restarting" for that one, which would then never end.
+var errRelaunchFailed = errors.New("the app could not restart itself: close it and open it again to continue")
+
+// relaunch starts a fresh copy of this program, then quits this one, and
+// reports whether the copy started. Used when the node or the library
+// needs a program restart.
+func (a *App) relaunch(then string) bool {
 	exe, err := os.Executable()
 	if err != nil {
 		a.relaunchFailed(err)
-		return
+		return false
 	}
 	cmd := exec.Command(exe)
 	for _, kv := range os.Environ() {
-		if !strings.HasPrefix(kv, relaunchEnv+"=") {
+		if !strings.HasPrefix(kv, relaunchEnv+"=") && !strings.HasPrefix(kv, windowEnv+"=") {
 			cmd.Env = append(cmd.Env, kv)
 		}
 	}
-	cmd.Env = append(cmd.Env, relaunchEnv+"="+then)
+	x, y := wruntime.WindowGetPosition(a.ctx)
+	w, h := wruntime.WindowGetSize(a.ctx)
+	cmd.Env = append(cmd.Env, relaunchEnv+"="+then, fmt.Sprintf("%s=%d,%d,%d,%d", windowEnv, x, y, w, h))
 	if err := cmd.Start(); err != nil {
 		a.relaunchFailed(err)
-		return
+		return false
 	}
 	a.log.tool("restarting the app")
 	// A plain exit rather than a window close: the library may still be
@@ -524,6 +591,7 @@ func (a *App) relaunch(then string) {
 		time.Sleep(500 * time.Millisecond)
 		os.Exit(0)
 	}()
+	return true
 }
 
 // GetStatus refreshes the wallet status of the running node.

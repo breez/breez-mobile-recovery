@@ -371,6 +371,8 @@
       renderWallet();
       show("wallet");
     } catch (e) {
+      // The app relaunches itself and quits: no error, no welcome screen.
+      if (/restart required/.test(errMsg(e))) { working("Restarting", false); return; }
       await refreshState();
       show("welcome");
       if (!isCancel(e)) showError(errMsg(e));
@@ -767,12 +769,17 @@
     const existing = await api.GetLog();
     if (existing && existing.length) appendLog(existing);
     await refreshState();
-    show(ui.state.restoreOther ? "source" : "welcome");
+    if (ui.state.autoContinue) {
+      working("Restarting", false);
+      pushRecent("Continuing after the restart...");
+    } else {
+      show(ui.state.restoreOther ? "source" : "welcome");
+    }
+    // A relaunched copy starts hidden: show it now, on the right screen.
+    api.ShowWindow();
     if (ui.state.autoContinue) {
       // Relaunched by the app itself after preparing the node: give the
       // previous copy a moment to release the work folder, then carry on.
-      pushRecent("Continuing after the restart...");
-      working("Restarting", false);
       await new Promise((r) => setTimeout(r, 4000));
       startSync();
     }
