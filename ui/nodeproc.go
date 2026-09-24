@@ -46,12 +46,17 @@ func helperCommand(name string, cfg core.Config) (*exec.Cmd, error) {
 	if err != nil {
 		return nil, err
 	}
+	return helperCommandOf(exe, name, cfg), nil
+}
+
+// helperCommandOf is helperCommand with the program exe.
+func helperCommandOf(exe, name string, cfg core.Config) *exec.Cmd {
 	cmd := exec.Command(exe)
 	cmd.Env = withEnv(os.Environ(),
 		helperEnv+"="+name,
 		"BREEZ_RECOVERY_WORKDIR="+cfg.WorkDir,
 		"BREEZ_RECOVERY_PEERS="+cfg.Peers)
-	return cmd, nil
+	return cmd
 }
 
 // nodeHandlers get what a helper sends besides replies.

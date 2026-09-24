@@ -478,6 +478,22 @@ func TestHelperCalls(t *testing.T) {
 	}
 }
 
+// A ping is answered with the version, without the backup's lock or the
+// node.
+func TestHelperPing(t *testing.T) {
+	fake := &fakeNode{}
+	r := newRig(t, fake, func() error {
+		t.Error("the ping ran the setup")
+		return nil
+	})
+	if m, _, _ := r.reply(r.call(callPing)); m.Text != version || m.Error != "" {
+		t.Errorf("ping: %+v", m)
+	}
+	if notes := fake.noted(); len(notes) != 0 {
+		t.Errorf("the ping reached the node: %q", notes)
+	}
+}
+
 // Stray output never breaks the stream: a line that is no frame is handed
 // on as text, a frame written right after a stray write without a line end
 // still arrives, and lines have no length limit.

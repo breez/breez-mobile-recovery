@@ -276,6 +276,8 @@ func (h *helper) dispatch(req helperRequest) {
 		h.mu.Unlock()
 	case callStop:
 		h.stop(h.stopWait)
+	case callPing:
+		h.reply(req.ID, &helperMessage{Text: version}, nil)
 	case callStartAndSync, callStatus, callHistory, callPrepareSweep, callBroadcastSweep:
 		h.start(req)
 	default:

@@ -76,7 +76,8 @@ recovery history [--csv | --json]                   # every money movement
 ## Where things are kept
 
 `~/.breez-recovery` (changeable under Advanced settings) holds your cached
-sign-ins and one folder per restored backup under `backups/`. Those folders
+sign-ins and one folder per restored backup under `backups/`, with that
+backup's log in `recovery.log`. Those folders
 contain the wallet's keys: delete the work folder once the funds are out.
 
 ## Security

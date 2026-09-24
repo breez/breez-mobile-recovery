@@ -61,11 +61,16 @@ type App struct {
 	syncMu   sync.Mutex
 	syncing  bool               // a sync call runs
 	lastSync *core.SyncProgress // the helper's last sync report, nil before its first
+	// syncSeq counts the sync events sent, so that a late follow-up of a
+	// line (syncLine) never replaces a newer one.
+	syncSeq   int
+	syncQuiet time.Duration
 }
 
 func newApp() *App {
 	a := &App{cfg: core.DefaultConfig(), log: newLogBuffer(20000),
-		newHelper: helperCommand, stopWait: helperStopTimeout, cancelWait: helperCancelTimeout}
+		newHelper: helperCommand, stopWait: helperStopTimeout, cancelWait: helperCancelTimeout,
+		syncQuiet: syncQuietTime}
 	a.core = core.New(a.cfg, &reporter{app: a})
 	a.logDir = a.core.NodeDir()
 	return a
@@ -639,9 +644,53 @@ func (a *App) syncOnHelper(ctx context.Context) (*core.Status, error) {
 	}
 }
 
-// syncStep shows msg on the sync screen, with the node at its start.
+// syncStep shows msg on the sync screen, with the node at its start. The
+// lines that follow belong to that start, not to the stage before.
 func (a *App) syncStep(msg string) {
+	a.syncMu.Lock()
+	defer a.syncMu.Unlock()
+	a.lastSync = nil
+	a.syncSeq++
 	a.emit("sync", core.SyncProgress{Stage: "start", Percent: -1, Remaining: -1, Message: msg})
+}
+
+// syncQuietTime is how long a line of the node leaves the sync bar where
+// the last report put it; see syncLine.
+const syncQuietTime = 1500 * time.Millisecond
+
+// syncLine shows a progress line of the node on the sync screen, which
+// otherwise shows the sync reports. While the node starts, waits or stops
+// no report comes, and its lines are what moves. A line in the middle of a
+// stage whose reports keep coming (a channel found closed) leaves the bar
+// where it is, so the bar does not flicker. When no report follows within
+// syncQuiet, as when the node stops to start again, the bar shows the node
+// working with no measure and no time left.
+func (a *App) syncLine(msg string) {
+	a.syncMu.Lock()
+	defer a.syncMu.Unlock()
+	if !a.syncing {
+		return
+	}
+	p := core.SyncProgress{Stage: "start", Percent: -1, Remaining: -1}
+	if a.lastSync != nil {
+		p = *a.lastSync
+	}
+	p.Message = msg
+	a.syncSeq++
+	a.emit("sync", p)
+	if p.Percent < 0 {
+		return
+	}
+	seq := a.syncSeq
+	time.AfterFunc(a.syncQuiet, func() {
+		a.syncMu.Lock()
+		defer a.syncMu.Unlock()
+		if a.syncing && a.syncSeq == seq {
+			p.Percent, p.Remaining = -1, -1
+			a.syncSeq++
+			a.emit("sync", p)
+		}
+	})
 }
 
 // ---- node helper ---------------------------------------------------------------
@@ -693,9 +742,12 @@ func (a *App) stopHelper(page bool) {
 		return
 	}
 	if page {
+		// The page's title says it.
 		a.emit("stopping")
+		a.log.tool("Stopping the node...")
+	} else {
+		a.progress("Stopping the node...")
 	}
-	a.progress("Stopping the node...")
 	p.stop(a.stopWait, a.log.tool)
 }
 
@@ -716,29 +768,18 @@ func (a *App) nodeEvent(m helperMessage) {
 	case eventProgress:
 		// Already in the log.
 		a.emit("progress", m.Text)
-		// The sync screen shows the sync reports only. Between them, while
-		// the node starts, waits or stops, its lines are what moves.
-		a.syncMu.Lock()
-		p := core.SyncProgress{Stage: "start", Remaining: -1}
-		if a.lastSync != nil {
-			p = *a.lastSync
-		}
-		syncing := a.syncing
-		a.syncMu.Unlock()
-		if syncing {
-			p.Percent = -1
-			p.Message = strings.TrimSpace(m.Text)
-			a.emit("sync", p)
-		}
+		a.syncLine(strings.TrimSpace(m.Text))
 	case eventSync:
 		if m.Sync == nil {
 			return
 		}
+		// Under the lock, in order with syncLine's events.
 		a.syncMu.Lock()
 		p := *m.Sync
 		a.lastSync = &p
+		a.syncSeq++
+		a.emit("sync", p)
 		a.syncMu.Unlock()
-		a.emit("sync", *m.Sync)
 	}
 }
 

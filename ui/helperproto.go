@@ -26,6 +26,10 @@ const (
 	// is answered, and neither takes an id.
 	callCancel = "cancel"
 	callStop   = "stop"
+	// callPing is answered at once with the program's version in Text,
+	// without the node or the backup folder: the release build's check
+	// that the helper mode works (TestBuiltHelper).
+	callPing = "ping"
 )
 
 // helperRequest is a line the window writes to the helper.

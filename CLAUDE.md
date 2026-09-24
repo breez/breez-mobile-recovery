@@ -19,7 +19,8 @@ core/      all logic. Config, Reporter interface, cloud sign-in, restore,
            node start, sync progress, channel check, status, sweep.
 main.go    CLI over core (recovery-cli).
 ui/        Wails v2 desktop app over core. app.go = methods bound to JS,
-           main.go = window setup. Frontend is plain HTML/CSS/JS in
+           main.go = window setup, helper.go and nodeproc.go = the node
+           helper process. Frontend is plain HTML/CSS/JS in
            ui/frontend/dist, embedded in the binary, no npm.
 docs/      GitHub Pages: signed-in.html, where the browser lands after a
            sign-in redirect.
@@ -45,7 +46,10 @@ folder, useful for testing next to a real one.
 
 `go test ./core && go test -tags webkit2_41 ./ui` runs the unit tests;
 the ones on a real node or wallet skip unless their `BREEZ_LIVE_*`
-variables are set.
+variables are set. CI runs vet and the tests on all three platforms
+before it builds, then `TestBuiltHelper` on the built app (starts it in
+helper mode, pings it, closes its stdin); locally it runs with
+`BREEZ_RECOVERY_SMOKE_EXE=<built executable>`.
 `go vet -tags walletrpc,chainrpc ./core . && go vet -tags webkit2_41,walletrpc,chainrpc ./ui` before
 committing. The `walletrpc` tag compiles lnd's WalletKit RPC in; without
 it the search for funds paid after the backup fails with an unimplemented RPC.
@@ -55,7 +59,9 @@ it the search for funds paid after the backup fails with an unimplemented RPC.
 `ui/frontend/mock/serve.sh` serves the frontend with a mocked Go backend
 on http://127.0.0.1:8765/. Query parameters pick the state: `?hasNode=1`,
 `?scenario=channels|pending|onchain`, `?slow=list|restore|sync|addresses|rescan1|rescan2|channels`
-holds a stage so it can be screenshotted. The History screen is reached
+holds a stage so it can be screenshotted, `?restart=1` starts the node
+again twice in the first sync, `?crash=1` (funds screen) and `?crash=sync`
+stop it by itself. The History screen is reached
 with `?hasNode=1`, Continue, then History (mock ledger in mock.js). The
 mock's method list must match `ui/app.go`; add a stub when adding a bound
 method.
@@ -63,7 +69,10 @@ method.
 The frontend talks to Go through `window.go.main.App.<Method>` and receives
 events through `window.runtime.EventsOn`: `progress` (a line of text),
 `log` (batched lines), `sync` (SyncProgress), `signin` (provider, url),
-`restarting` (the node stops before the app restarts itself).
+`stopping` (a running node stops for a switch, a settings change or the
+close), `logreset` (the log went to the old backup's folder: empty the
+panel), `nodestopped` (the node exited by itself with no call waiting:
+the funds screen offers Continue recovery).
 Every value is rendered with textContent; keep it that way.
 
 ## Gotchas learned the hard way
@@ -103,12 +112,10 @@ Every value is rendered with textContent; keep it that way.
   initialised before the backup is chosen: Drive backups are listed with a
   direct read-only Drive call (core/drive.go), not through the library,
   and the library is initialised when the node first starts, on the
-  chosen folder. A restore never touches the library, so the node starts
-  in the process that restored (no restart after a restore since
-  2026-09-24).
-  Switching backups after the library ran needs a program restart:
-  `App.RestoreOther` relaunches with `BREEZ_RECOVERY_RELAUNCH=restore-other`,
-  `App.UseRestored` with `BREEZ_RECOVERY_RELAUNCH=use:<name>`.
+  chosen folder. A restore never touches the library, and the window
+  never runs it: the node runs in a helper process (entry below), so
+  switching backups stops the helper and starts a new one on the chosen
+  folder.
   Restoring a backup that is already there moves the old folder aside
   (`<name>.replaced-<time>`), it never deletes a wallet. A legacy
   single-folder install is moved into `backups/` on start, by renaming a
@@ -169,7 +176,7 @@ Every value is rendered with textContent; keep it that way.
   re-checks on the next start), the counters are read again (lnd may have
   handed out addresses meanwhile), NextAddr advances each branch up to the
   paid address and the last address returned must equal the one derived
-  here, then the app restarts. The next StartNode drops the wallet's
+  here, then the node starts again. The next StartNode drops the wallet's
   history ITSELF (the library's dropwtx.Drop, called before Init, error
   returned) and removes the order only then. The library's FORCE_RESCAN
   file is NOT used: its Init only logs a failed drop, removes the file
@@ -233,10 +240,9 @@ Every value is rendered with textContent; keep it that way.
   to synchronize wallet to chain" gets the full check ordered.
 - First start after a restore: lnd must start at the chain tip (see the
   closed-channel entry below), so the first start only waits for the
-  headers, writes `chain-ready` and the app restarts itself
-  (BREEZ_RECOVERY_RELAUNCH=continue; the CLI asks to be run again).
-  Why a program restart: see the restart entry below. In a real restore
-  on 2026-09-24 the restart took 1 s.
+  headers, writes `chain-ready` and the node starts again in a new
+  helper (the CLI asks to be run again). Why a new process: see the node
+  helper entry below.
 - Rescan progress persists in wallet.db, a restart resumes where it was.
   A `FORCE_RESCAN` file in the backup's folder (`backups/<name>/`) makes
   the library drop the transaction store and lnd's height hints and rescan
@@ -308,7 +314,7 @@ Every value is rendered with textContent; keep it that way.
   starts the notifier only after its own wait for the chain
   (initial-headers-sync-delta=2h, lnd.conf). The first start now waits
   for "Fully caught up with cfheaders" before its chain-ready restart
-  (firstStart), so the final process starts lnd at the tip and the close
+  (firstStart), so the next start runs lnd at the tip and the close
   is found by the filter scan in minutes (lnd persists
   its scan position as a height hint across restarts). (2) The screen
   only knew lnd's balances. The channel check now derives the to_remote
@@ -354,22 +360,65 @@ Every value is rendered with textContent; keep it that way.
   encrypted SCB: chacha20poly1305: message authentication failed"), which
   takes the library down with it and then the process panics (2026-09-17,
   Roy restoring his 2022 backup over the 2019 one).
-- The paths that need a stopped node return ErrRestartRequired and the
-  app relaunches itself; the CLI exits and asks to be run again. A new
-  process is the known way to start the library again: its app object
-  starts and stops only once (breez app.go Start, Stop), a process stays
-  bound to its first folder (`boundLibDir` above), and a second
-  `bindings.Init` in one process was never tried (the library's own
-  RestoreBackup stops and re-creates its app in-process). What sometimes
-  hangs is the library's Stop after lnd is down (it returned 0.1 s after
-  lnd in one real run and not within the 20 s limit in others; why is not
-  established), so StopWithin returns once lnd logs "LTND: Shutdown
-  complete" and the program exit ends the rest. The 2026-09-17 crash when
-  Roy picked a second backup came from the foreign `channel.backup` above:
-  lnd aborts in server.Start, SubscribeInvoices then fails and the account
-  service reads the nil stream (breez/breez account/payments.go:1303-1310).
-  That nil read can happen on any start where the subscription fails; one
-  folder per backup removed this cause of it.
+- The node helper (ui/helper.go, ui/nodeproc.go, ui/helperproto.go). The
+  window process keeps Wails, dialogs, sign-in, listing, restore, the log
+  and `instance.lock`, and never starts the library. The node (core with
+  the breez library and lnd) runs in a child process of the same
+  executable, chosen by `BREEZ_RECOVERY_NODE_HELPER=<backup name>` at the
+  top of ui/main.go main(), before anything of Wails (its runtime
+  functions log.Fatalf without a window). Why a process: the library's app
+  object starts and stops only once (breez app.go Start, Stop), a process
+  stays bound to its first folder (`boundLibDir` above), and a second
+  `bindings.Init` in one process was never tried. So every new start of
+  the node is a new helper and the window stays. The CLI still runs the
+  node in-process and asks to be run again.
+  Pipes: JSON lines on the helper's stdin and on the stdout it saved
+  before core.New took os.Stdout; no length limit (History is large); a
+  line that is not a frame goes to the log; stderr (a panic trace) goes
+  to the log. Calls: startAndSync, status, history, prepareSweep,
+  broadcastSweep, cancel, stop, and ping (the version, no node; CI).
+  Planned restarts: core stops the node and returns ErrRestartRequired
+  (chain-ready, history shortcut, funds found, failed verify, wallet sync
+  reset); the helper replies `restart` and exits, and the window starts a
+  new helper in the same StartAndSync with "Starting the node again..."
+  on the sync screen, 6 in a row at most. With no sync report coming
+  (starting, waiting, stopping) the sync screen shows the node's lines; a
+  line mid-stage leaves the bar, 1.5 s without a report makes it one
+  with no measure (App.syncLine).
+  Order and locks: a new helper starts only after the last one's Wait
+  returned (breez.db opens with no timeout), and the window marks its
+  folder in use (`SetInUse`) until then, which keeps the in-process
+  guards working. The helper locks `backups/<name>/instance.lock`
+  (`LockBackup`, up to 20 s), and the window checks that lock before it
+  moves or selects a folder (`ErrBackupInUse`): a helper of a crashed
+  window lives up to 25 s.
+  Stop: a stop frame and stdin closed; the helper cancels, gives the call
+  3 s (a broadcast until the end), runs StopWithin(20 s) and exits; the
+  window kills it after 25 s, and after 30 s of an ignored cancel (never
+  during a broadcast). stdin's end or a failed write (SIGPIPE ignored)
+  stops it too, and a timer ends it 25 s after any stop began. The
+  library's Stop sometimes takes long after lnd is down (0.1 s in one
+  real run, past 20 s in others; the cause is not established), so
+  StopWithin returns once lnd logs "LTND: Shutdown complete" and the
+  helper's exit ends the rest.
+  A crash never starts the node again: a waiting call fails with "the
+  node stopped unexpectedly", with none waiting the page gets
+  `nodestopped`. A failed sync gets a new helper next time; a cancelled
+  one keeps its node.
+  Log per backup: it runs on across the helper's restarts. When the
+  backup in use changes (Restore another backup, switching, a restore of
+  another backup, a settings change) and on close, the lines so far are
+  appended to `recovery.log` in the old backup's folder and the page gets
+  `logreset`.
+  Support: a second "Breez Recovery" process runs while a node runs; it
+  is the node. On Windows Wails runs OnBeforeClose on the UI thread, so
+  the window can freeze while the node stops.
+  The 2026-09-17 crash when Roy picked a second backup came from the
+  foreign `channel.backup` above: lnd aborts in server.Start,
+  SubscribeInvoices then fails and the account service reads the nil
+  stream (breez/breez account/payments.go:1303-1310). That nil read can
+  happen on any start where the subscription fails; one folder per backup
+  removed this cause of it, and now it ends the helper, not the window.
 - History (core/history.go) is a ledger with one entry per money
   movement. Sources: the app's own payment list (`bindings.GetPayments`,
   the same list Breez mobile showed, with descriptions), lnd's closed and

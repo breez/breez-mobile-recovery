@@ -1,9 +1,10 @@
 name: build
 
-# Builds the Breez Recovery desktop app (ui/) and CLI (root) for macOS,
-# Windows and Linux. Runs on every pull request, on demand, and on tags
-# named v*, which also publish a GitHub release. The Google OAuth desktop
-# client is passed in from repository secrets and baked into the binaries.
+# Vets, tests and builds the Breez Recovery desktop app (ui/) and CLI
+# (root) for macOS, Windows and Linux, then checks the built app's node
+# helper. Runs on every pull request, on demand, and on tags named v*,
+# which also publish a GitHub release. The Google OAuth desktop client is
+# passed in from repository secrets and baked into the binaries.
 on:
   push:
     tags: ["v*"]
@@ -20,15 +21,22 @@ jobs:
       fail-fast: false
       matrix:
         include:
+          # exe: the desktop app's executable in ui/build/bin.
           - os: macos-latest
             platform: darwin/universal
             artifact: breez-recovery-macos
+            tags: walletrpc,chainrpc
+            exe: breez-recovery.app/Contents/MacOS/breez-recovery
           - os: windows-latest
             platform: windows/amd64
             artifact: breez-recovery-windows
+            tags: walletrpc,chainrpc
+            exe: breez-recovery.exe
           - os: ubuntu-22.04
             platform: linux/amd64
             artifact: breez-recovery-linux
+            tags: webkit2_41,walletrpc,chainrpc
+            exe: breez-recovery
     runs-on: ${{ matrix.os }}
     defaults:
       run:
@@ -46,6 +54,13 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y libgtk-3-dev libwebkit2gtk-4.1-dev
+
+      - name: Vet and test
+        run: |
+          go vet -tags walletrpc,chainrpc ./core .
+          go vet -tags ${{ matrix.tags }} ./ui
+          go test -count=1 -tags walletrpc,chainrpc ./core
+          go test -count=1 -tags ${{ matrix.tags }} ./ui
 
       - name: Install Wails
         run: go install github.com/wailsapp/wails/v2/cmd/wails@${{ env.WAILS_VERSION }}
@@ -66,9 +81,18 @@ jobs:
             -X main.version=${{ steps.version.outputs.version }}
             -X github.com/breez/breez-mobile-recovery/core.GoogleClientID=${{ secrets.RECOVERY_GOOGLE_CLIENT_ID }}
             -X github.com/breez/breez-mobile-recovery/core.GoogleClientSecret=${{ secrets.RECOVERY_GOOGLE_CLIENT_SECRET }}
-        run: |
-          tags="-tags walletrpc,chainrpc"; [[ "${{ runner.os }}" == "Linux" ]] && tags="-tags webkit2_41,walletrpc,chainrpc"
-          wails build -platform ${{ matrix.platform }} -skipbindings $tags -ldflags "$LDFLAGS"
+        run: wails build -platform ${{ matrix.platform }} -skipbindings -tags ${{ matrix.tags }} -ldflags "$LDFLAGS"
+
+      # The node runs in a copy of the app started in helper mode, over
+      # pipes (ui/helper.go). This starts the built app that way, as the
+      # window does, pings it and closes its stdin: it must answer and exit
+      # (ui/builthelper_test.go). Nothing else checks that the release
+      # builds (a Windows GUI program, a macOS universal binary) work so.
+      - name: Smoke test the node helper
+        working-directory: ui
+        env:
+          BREEZ_RECOVERY_SMOKE_EXE: build/bin/${{ matrix.exe }}
+        run: go test -count=1 -tags ${{ matrix.tags }} -run '^TestBuiltHelper$' -v .
 
       - name: Build CLI
         env:

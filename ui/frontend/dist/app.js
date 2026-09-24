@@ -374,6 +374,7 @@
     try {
       await api.Restore(req);
       ui.force = false;
+      ui.useName = ""; // the start screen offers the backup now in use
       await refreshState();
       await startSync();
     } catch (e) {
@@ -813,6 +814,8 @@
       }
       startSync();
     },
+    // The funds screen, after the node stopped by itself: the same backup.
+    "restart-node": () => { if (!ui.busy) startSync(); },
     "restore-other": async () => {
       if (ui.busy) return;
       // Each backup has a folder of its own, so nothing is overwritten. A
