@@ -1,7 +1,8 @@
 #!/bin/sh
 # Serves the frontend with a mocked Go backend for UI work without a node.
 # Usage: ui/frontend/mock/serve.sh   then open http://127.0.0.1:8765/
-# Query parameters: ?hasNode=1  ?scenario=channels|pending|onchain
+# Query parameters: ?hasNode=1  ?running=1 (a synced node runs: Back to funds)
+#   ?scenario=channels|pending|onchain
 #   ?slow=list|restore|sync|addresses|rescan1|rescan2|channels (holds that stage)
 #   ?restart=1 (the node starts again twice during the first sync)
 #   ?crash=1 (it stops by itself on the funds screen)  ?crash=sync (during the sync)

@@ -41,18 +41,19 @@
             <li><strong>Move the funds</strong> to a bitcoin address you control.</li>
           </ol>
           <div class="actions">
-            <button class="btn btn-primary" type="button" data-action="start">Get started</button>
+            <button class="btn btn-primary" type="button" data-action="go-source">Get started</button>
           </div>
         </div>
         <div id="welcome-existing" class="hidden">
+          <button class="btn btn-ghost btn-sm btn-back card-back hidden" type="button" data-action="back-funds" id="btn-back-funds">Back to funds</button>
           <h1>Continue your recovery</h1>
           <p class="lead" id="existing-lead">A Breez app restored earlier is on this computer. Continue to sync it and move the funds, or restore another backup.</p>
           <div class="summary" id="existing-summary">
             <div><span class="muted">Restored app folder</span><span class="mono" id="existing-node-path"></span></div>
           </div>
-          <div id="restored-list" class="list hidden"></div>
+          <div id="restored-list" class="list hidden" role="listbox" tabindex="0" aria-label="Restored apps"></div>
           <div class="actions">
-            <button class="btn btn-secondary" type="button" data-action="restore-other">Restore another backup</button>
+            <button class="btn btn-secondary" type="button" data-action="go-source">Restore another backup</button>
             <button class="btn btn-primary" type="button" data-action="continue-existing">Continue recovery</button>
           </div>
         </div>
@@ -133,7 +134,7 @@
       <div class="card">
         <h1>Choose the backup to restore</h1>
         <p class="lead">One entry per Breez app installation that backed up to this account. The latest one is usually the phone you used last.</p>
-        <div id="snapshot-list" class="list"></div>
+        <div id="snapshot-list" class="list" role="listbox" tabindex="0" aria-label="Backups"></div>
         <div class="actions">
           <button class="btn btn-ghost btn-back" type="button" data-action="back-source">Back</button>
           <button class="btn btn-primary" type="button" data-action="pick-continue" id="pick-continue" disabled>Continue</button>
@@ -229,7 +230,7 @@
         <p class="lead" id="wallet-advice"></p>
         <div id="wallet-lists"></div>
         <div class="actions">
-          <button class="btn btn-secondary" type="button" data-action="restore-other">Restore another backup</button>
+          <button class="btn btn-secondary" type="button" data-action="switch-backup">Switch backup</button>
           <button class="btn btn-primary" type="button" data-action="copy-channels" id="btn-copy-channels">Copy the list</button>
           <button class="btn btn-primary" type="button" data-action="go-sweep" id="btn-sweep">Send on-chain balance</button>
           <button class="btn btn-primary hidden" type="button" data-action="restart-node" id="btn-continue">Continue recovery</button>
@@ -303,7 +304,7 @@
           </div>
         </div>
         <div class="actions">
-          <button class="btn btn-secondary" type="button" data-action="restore-other">Restore another backup</button>
+          <button class="btn btn-secondary" type="button" data-action="switch-backup">Switch backup</button>
           <button class="btn btn-primary" type="button" data-action="back-wallet-refresh">Back to funds</button>
         </div>
       </div>

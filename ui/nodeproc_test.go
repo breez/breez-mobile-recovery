@@ -330,7 +330,7 @@ func TestNodeHelperCrashWithACall(t *testing.T) {
 	if _, err := w.a.StartAndSync(); !errors.Is(err, errNodeCrashed) {
 		t.Fatalf("sync: %v", err)
 	}
-	inOrder(t, w.log(), "panic: fake crash", "The node stopped unexpectedly (exit status 2).", "error: the node stopped unexpectedly")
+	inOrder(t, w.log(), "panic: fake crash", "The node stopped unexpectedly (exit status 2).", "error: The node stopped unexpectedly. Check the logs")
 	if e := w.named("nodestopped"); len(e) != 0 {
 		t.Errorf("nodestopped sent while a call waited: %v", e)
 	}
@@ -427,7 +427,7 @@ func TestLogPerBackup(t *testing.T) {
 	if _, err := w.a.StartAndSync(); err != nil {
 		t.Fatal(err)
 	}
-	if err := w.a.UseRestored("backup-bbbb"); err != nil {
+	if err := w.a.UseRestored("backup-bbbb", false); err != nil {
 		t.Fatal(err)
 	}
 	var names []string
@@ -472,6 +472,189 @@ func TestLogPerBackup(t *testing.T) {
 	}
 	if lines := w.log(); count(lines, "backup-bbbb") != 0 {
 		t.Errorf("log after the settings:\n%s", strings.Join(lines, "\n"))
+	}
+}
+
+// answers makes the window answer a question by its title, "No" when the
+// title is not in the map, and returns the titles asked so far.
+func (w *window) answers(by map[string]string) func() []string {
+	var mu sync.Mutex
+	var asked []string
+	w.a.ask = func(o wruntime.MessageDialogOptions) (string, error) {
+		mu.Lock()
+		defer mu.Unlock()
+		asked = append(asked, o.Title)
+		if a, ok := by[o.Title]; ok {
+			return a, nil
+		}
+		return "No", nil
+	}
+	return func() []string {
+		mu.Lock()
+		defer mu.Unlock()
+		return append([]string(nil), asked...)
+	}
+}
+
+// kept fails the test when the node p is no longer the one running, or
+// another one was started or stopped.
+func (w *window) kept(p *nodeProc, what string) {
+	w.t.Helper()
+	if w.a.runningHelper() != p || len(w.started()) != 1 || len(w.named("stopping")) != 0 {
+		w.t.Errorf("%s stopped or started the node", what)
+	}
+}
+
+// Switch backup opens the start screen with the node running: the state and
+// the restored apps it reads leave the node alone, the state offers Back to
+// funds, and Back to funds shows the funds of the same node.
+func TestSwitchBackupKeepsTheNode(t *testing.T) {
+	root := t.TempDir()
+	restored(t, root, "backup-aaaa", true)
+	restored(t, root, "backup-bbbb", false)
+	w := newWindow(t, root, "sync")
+	if w.a.GetState().NodeSynced {
+		t.Error("Back to funds offered before the node ran")
+	}
+	if _, err := w.a.StartAndSync(); err != nil {
+		t.Fatal(err)
+	}
+	p := w.a.runningHelper()
+	if !w.a.GetState().NodeSynced {
+		t.Error("no Back to funds while the node runs")
+	}
+	var inUse []string
+	for _, rb := range w.a.RestoredApps() {
+		if rb.Current {
+			inUse = append(inUse, rb.Name)
+		}
+	}
+	if strings.Join(inUse, ",") != "backup-aaaa" {
+		t.Errorf("in use: %q", inUse)
+	}
+	if st, err := w.a.GetStatus(); err != nil || st.NodeID != "fake" {
+		t.Errorf("Back to funds: %+v, %v", st, err)
+	}
+	w.kept(p, "Switch backup")
+	w.stop()
+	if w.a.GetState().NodeSynced {
+		t.Error("Back to funds offered with no node")
+	}
+}
+
+// Continue recovery on the backup in use, its node running, does not start
+// the node again: after a sync that ended well the funds come from it at
+// once, and after a sync stopped once the node was up (no Back to funds:
+// its channels were not checked) the new sync runs on it.
+func TestContinueWithTheBackupInUse(t *testing.T) {
+	root := t.TempDir()
+	restored(t, root, "backup-aaaa", true)
+	restored(t, root, "backup-bbbb", false)
+	w := newWindow(t, root, "waitcancel")
+	done := w.syncInBackground()
+	w.waitForSync("Looking for funds")
+	w.a.Cancel()
+	if err := w.result(done); err == nil || err.Error() != "cancelled" {
+		t.Fatalf("sync: %v", err)
+	}
+	p := w.a.runningHelper()
+	if p == nil || w.a.GetState().NodeSynced {
+		t.Fatal("Back to funds offered after a stopped sync, or the node is gone")
+	}
+	if _, err := w.a.StartAndSync(); err != nil {
+		t.Fatal(err)
+	}
+	if !w.a.GetState().NodeSynced {
+		t.Error("no Back to funds after the sync")
+	}
+	if st, err := w.a.GetStatus(); err != nil || st.NodeID != "fake" {
+		t.Errorf("funds: %+v, %v", st, err)
+	}
+	w.kept(p, "Continue recovery")
+}
+
+// Continue recovery on another backup stops the node first, and asks first
+// when funds of the app are on their way; a No keeps it running.
+func TestSwitchToAnotherBackupStopsTheNode(t *testing.T) {
+	root := t.TempDir()
+	dirA := restored(t, root, "backup-aaaa", true)
+	restored(t, root, "backup-bbbb", false)
+	w := newWindow(t, root, "sync")
+	if _, err := w.a.StartAndSync(); err != nil {
+		t.Fatal(err)
+	}
+	p := w.a.runningHelper()
+	answer := map[string]string{"Switch backup?": "No"}
+	asked := w.answers(answer)
+	if err := w.a.UseRestored("backup-bbbb", true); err == nil || err.Error() != "switch backup cancelled" {
+		t.Errorf("switch answered No: %v", err)
+	}
+	if w.a.c().CurrentBackup() != "backup-aaaa" {
+		t.Error("a No switched the backup")
+	}
+	w.kept(p, "a No")
+	answer["Switch backup?"] = "Yes"
+	if err := w.a.UseRestored("backup-bbbb", true); err != nil {
+		t.Fatal(err)
+	}
+	if got := strings.Join(asked(), ","); got != "Switch backup?,Switch backup?" {
+		t.Errorf("asked %s", got)
+	}
+	if w.a.runningHelper() != nil || w.a.c().CurrentBackup() != "backup-bbbb" {
+		t.Error("the node still runs, or the backup did not change")
+	}
+	inOrder(t, readLog(t, dirA), "fake node on backup-aaaa", "The node has stopped.")
+	if _, err := w.a.StartAndSync(); err != nil {
+		t.Fatal(err)
+	}
+	if got := strings.Join(w.started(), ","); got != "backup-aaaa,backup-bbbb" {
+		t.Errorf("helpers %s", got)
+	}
+}
+
+// A restore stops the node of the backup in use before it begins, and asks
+// first when funds of that app are on their way; a No keeps it running.
+// Continuing with the backup in use, already restored, keeps its node, and
+// with no node running there is nothing to ask.
+func TestRestoreStopsTheNodeFirst(t *testing.T) {
+	root := t.TempDir()
+	dirA := restored(t, root, "backup-aaaa", true)
+	restored(t, root, "backup-bbbb", false)
+	w := newWindow(t, root, "sync")
+	if _, err := w.a.StartAndSync(); err != nil {
+		t.Fatal(err)
+	}
+	p := w.a.runningHelper()
+	answer := map[string]string{"Already restored": "Yes", "Restore another backup?": "No"}
+	asked := w.answers(answer)
+	restore := func(name string) error {
+		return w.a.Restore(RestoreRequest{Source: "google", NodeID: name, Ask: true})
+	}
+	if err := restore("backup-aaaa"); err != nil {
+		t.Fatalf("the backup in use: %v", err)
+	}
+	w.kept(p, "continuing with the backup in use")
+	if err := restore("backup-bbbb"); err == nil || err.Error() != "restore another backup cancelled" {
+		t.Errorf("restore answered No: %v", err)
+	}
+	if w.a.c().CurrentBackup() != "backup-aaaa" {
+		t.Error("a No changed the backup")
+	}
+	w.kept(p, "a No")
+	answer["Restore another backup?"] = "Yes"
+	if err := restore("backup-bbbb"); err != nil {
+		t.Fatal(err)
+	}
+	if w.a.runningHelper() != nil || w.a.c().CurrentBackup() != "backup-bbbb" {
+		t.Error("the node still runs, or the backup did not change")
+	}
+	inOrder(t, readLog(t, dirA), "fake node on backup-aaaa", "Stopping the node...", "The node has stopped.")
+	if err := restore("backup-aaaa"); err != nil {
+		t.Fatal(err)
+	}
+	want := "Already restored,Already restored,Restore another backup?,Already restored,Restore another backup?,Already restored"
+	if got := strings.Join(asked(), ","); got != want {
+		t.Errorf("asked %s", got)
 	}
 }
 

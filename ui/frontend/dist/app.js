@@ -26,7 +26,7 @@
     logCount: 0,
     logOpen: false,
     busy: false,
-    leaving: false,       // Restore another backup is stopping the node
+    moving: false,        // funds of the app in use were on their way at Switch backup: leaving it asks first
     useName: "",          // restored backup picked on the start screen
     currentName: "",      // restored backup in use
     restored: new Set(),  // names (node ids) of the backups restored here
@@ -39,13 +39,15 @@
     ui.screen = name;
     $$(".screen").forEach((s) => s.classList.toggle("active", s.dataset.screen === name));
     $("#main").scrollTop = 0;
+    fitLists();
   }
 
   function showError(msg) {
     $("#error-text").textContent = String(msg || "Something went wrong");
     $("#error").classList.remove("hidden");
+    fitLists();
   }
-  function clearError() { $("#error").classList.add("hidden"); }
+  function clearError() { $("#error").classList.add("hidden"); fitLists(); }
 
   function errMsg(e) {
     if (!e) return "Unknown error";
@@ -86,6 +88,68 @@
   }
 
   function setBusy(b) { ui.busy = b; }
+
+  // ---------------------------------------------------------------- lists
+
+  // The restored apps and the backups can be many. A long list scrolls in a
+  // box that shows whole rows and half of the next, so it reads as one that
+  // scrolls: four rows at most, fewer when the window is short, so that the
+  // buttons and Advanced settings under it stay in view. Its rows are all
+  // the same height.
+  function fitList(list) {
+    list.classList.remove("scroll");
+    list.style.maxHeight = "";
+    const rows = list.children;
+    if (rows.length < 3 || !list.offsetParent) return; // two rows always show; or hidden
+    const main = $("#main"), card = list.closest(".card");
+    // Down to Advanced settings' own line, open or not.
+    const sum = card.querySelector(".advanced > summary");
+    const end = sum ? sum.getBoundingClientRect().bottom + parseFloat(getComputedStyle(card).paddingBottom) : card.getBoundingClientRect().bottom;
+    const over = end - main.getBoundingClientRect().top + main.scrollTop + parseFloat(getComputedStyle(main).paddingBottom) - main.clientHeight;
+    const row = rows[0].offsetHeight, pitch = rows[1].offsetTop - rows[0].offsetTop;
+    const n = Math.max(2, Math.min(4, Math.floor((list.offsetHeight - Math.max(0, over) - row / 2) / pitch)));
+    if (n >= rows.length) return;
+    list.classList.add("scroll");
+    list.style.maxHeight = parseFloat(getComputedStyle(list).paddingTop) + n * pitch + Math.round(row / 2) + "px";
+    reveal(list, list.querySelector(".selected"));
+  }
+  function fitLists() { fitList($("#restored-list")); fitList($("#snapshot-list")); }
+  new ResizeObserver(fitLists).observe($("#main"));
+
+  // Scrolls the list, not the page, so that row shows whole.
+  function reveal(list, row) {
+    if (!row || !list.classList.contains("scroll")) return;
+    const pad = parseFloat(getComputedStyle(list).paddingTop);
+    const top = row.offsetTop - pad, bottom = row.offsetTop + row.offsetHeight + pad;
+    if (top < list.scrollTop) list.scrollTop = top;
+    else if (bottom > list.scrollTop + list.clientHeight) list.scrollTop = bottom - list.clientHeight;
+  }
+
+  // A row of a list to pick from.
+  function listRow(list, disabled) {
+    const row = el("div", "item");
+    row.setAttribute("role", "option");
+    row.setAttribute("aria-selected", "false");
+    if (disabled) { row.classList.add("disabled"); row.setAttribute("aria-disabled", "true"); }
+    list.appendChild(row);
+    return row;
+  }
+  function selectRow(list, row) {
+    Array.from(list.children).forEach((r) => {
+      r.classList.toggle("selected", r === row);
+      r.setAttribute("aria-selected", String(r === row));
+    });
+    reveal(list, row);
+  }
+  // Up, Down, Home and End move a list's pick.
+  $$(".list[tabindex]").forEach((list) => list.addEventListener("keydown", (ev) => {
+    const rows = Array.from(list.children).filter((r) => !r.classList.contains("disabled"));
+    const i = rows.findIndex((r) => r.classList.contains("selected"));
+    const to = { ArrowDown: i + 1, ArrowUp: i - 1, Home: 0, End: rows.length - 1 }[ev.key];
+    if (to === undefined || !rows.length) return;
+    ev.preventDefault();
+    rows[Math.max(0, Math.min(rows.length - 1, to))].click();
+  }));
 
   function pushRecent(msg) {
     ui.recent.push(msg);
@@ -145,15 +209,18 @@
     $("#welcome-existing").classList.toggle("hidden", !ui.state.hasNode);
     $("#welcome-fresh").classList.toggle("hidden", ui.state.hasNode);
     $("#existing-node-path").textContent = ui.state.nodeDir || ui.state.workDir;
+    // Switch backup left the node of the backup in use running.
+    $("#btn-back-funds").classList.toggle("hidden", !ui.state.nodeSynced);
     await renderRestored();
   }
 
   // The apps restored on this computer: one shows as a summary, several as a
-  // list to pick the one to continue with, the last opened first.
+  // list to pick the one to continue with, the one in use first, then the
+  // last opened.
   async function renderRestored() {
     const apps = (ui.state.hasNode && (await api.RestoredApps())) || [];
     const opened = (a) => (a.lastOpened ? new Date(a.lastOpened).getTime() : 0);
-    apps.sort((x, y) => opened(y) - opened(x));
+    apps.sort((x, y) => (y.current - x.current) || (opened(y) - opened(x)));
     const many = apps.length > 1;
     const current = apps.find((a) => a.current);
     ui.currentName = current ? current.name : "";
@@ -167,14 +234,14 @@
     list.innerHTML = "";
     if (!many) return;
     apps.forEach((a) => {
-      const item = el("div", "item" + (a.name === ui.useName ? " selected" : ""));
+      const item = listRow(list);
       item.title = a.dir;
       const main = el("div", "item-main");
-      const title = el("div", "item-title", a.lastOpened ? "Last opened " + fmtDate(a.lastOpened) : "Not opened yet");
+      const title = el("div", "item-title");
+      title.appendChild(el("span", null, a.lastOpened ? "Last opened " + fmtDate(a.lastOpened) : "Not opened yet"));
       // An app that was used, told apart from empty test apps.
       if (a.payments > 0) {
         const t = el("span", "tag", "Has history");
-        t.style.marginLeft = "8px";
         t.title = a.payments + " entr" + (a.payments === 1 ? "y" : "ies") + " in the app's payment list";
         title.appendChild(t);
       }
@@ -199,10 +266,11 @@
       if (a.current) item.appendChild(el("span", "tag", "In use"));
       item.addEventListener("click", () => {
         ui.useName = a.name;
-        $$("#restored-list .item").forEach((x) => x.classList.toggle("selected", x === item));
+        selectRow(list, item);
       });
-      list.appendChild(item);
     });
+    selectRow(list, list.children[apps.findIndex((a) => a.name === ui.useName)]);
+    fitList(list);
   }
 
   async function applySettings() {
@@ -268,39 +336,31 @@
     ui.selected = null;
     $("#pick-continue").disabled = true;
     ui.snapshots.forEach((s, i) => {
-      const item = el("div", "item");
       const unsupported = s.encryptionType === "PIN";
-      if (unsupported) item.classList.add("disabled");
+      const item = listRow(list, unsupported);
       const main = el("div", "item-main");
-      const title = el("div", "item-title", "Last backup " + fmtDate(s.modifiedTime));
+      const title = el("div", "item-title");
+      title.appendChild(el("span", null, "Last backup " + fmtDate(s.modifiedTime)));
       // Said before the pick: choosing one restored here asks whether to
       // continue with it or restore it again.
       const tags = (i === 0 ? ["Latest"] : []).concat(ui.restored.has(s.nodeId) ? ["Restored"] : []);
-      tags.forEach((text) => {
-        const t = el("span", "tag", text);
-        t.style.marginLeft = "8px";
-        title.appendChild(t);
-      });
+      tags.forEach((text) => title.appendChild(el("span", "tag", text)));
       main.appendChild(title);
       main.appendChild(el("div", "item-sub", s.nodeId));
       item.appendChild(main);
       const lab = encLabel(s);
       item.appendChild(el("span", "tag " + lab.cls, lab.text));
       if (!unsupported) {
-        if (s.nodeId === keep) {
+        const pick = () => {
           ui.selected = s;
-          item.classList.add("selected");
+          selectRow(list, item);
           $("#pick-continue").disabled = false;
-        }
-        item.addEventListener("click", () => {
-          ui.selected = s;
-          $$("#snapshot-list .item").forEach((x) => x.classList.remove("selected"));
-          item.classList.add("selected");
-          $("#pick-continue").disabled = false;
-        });
+        };
+        if (s.nodeId === keep) pick();
+        item.addEventListener("click", pick);
       }
-      list.appendChild(item);
     });
+    fitList(list);
   }
 
   async function chooseZip() {
@@ -370,6 +430,7 @@
       zipPath: ui.zip ? ui.zip.path : "",
       phrase: phrase,
       force: ui.force,
+      ask: ui.moving, // a node of another backup may run
     };
     working("Restoring your backup", true);
     setBusy(true);
@@ -471,6 +532,7 @@
 
   async function startSync() {
     ui.nodeStopped = false;
+    ui.moving = false;
     resetSync();
     show("sync");
     setBusy(true);
@@ -494,6 +556,8 @@
       resetSweep();
       renderWallet();
       show("wallet");
+    } else if (ui.screen === "welcome") {
+      refreshState(); // no Back to funds
     }
     showError(msg);
   }
@@ -525,7 +589,7 @@
 
     let advice;
     if (ui.nodeStopped) {
-      advice = "The node is not running.";
+      advice = "The node is not running. Continue recovery to start it.";
     } else if (hasChannels) {
       advice = "Channels still open. Email the list to contact@breez.technology.";
     } else if ((st.closedOnChain || []).some((c) => c.collect > 0)) {
@@ -601,11 +665,13 @@
   }
 
   async function refreshStatus() {
+    const from = ui.screen;
     setBusy(true);
     try {
       ui.status = await api.GetStatus();
       renderWallet();
-      show("wallet");
+      // Unless Switch backup was pressed meanwhile.
+      if (ui.screen === from) show("wallet");
     } catch (e) { nodeError(e); }
     finally { setBusy(false); }
   }
@@ -800,44 +866,41 @@
 
   const actions = {
     "dismiss-error": clearError,
-    "start": () => { ui.force = false; show("source"); },
+    // Each backup has a folder of its own, so nothing is overwritten. A node
+    // that runs stops when the restore begins.
+    "go-source": () => { ui.force = false; show("source"); },
     "continue-existing": async () => {
       if (ui.busy) return; // a second click while switching
       if (ui.useName && ui.useName !== ui.currentName) {
         setBusy(true);
         try {
           // A node running on the backup in use stops first.
-          await api.UseRestored(ui.useName);
+          await api.UseRestored(ui.useName, ui.moving);
           await refreshState();
         } catch (e) {
           await refreshState();
           show("welcome");
+          if (isCancel(e)) return; // answered No: its node runs on
           throw e;
         } finally { setBusy(false); }
+      } else if (ui.state.nodeSynced) {
+        return refreshStatus(); // its node runs: its funds, no new sync
       }
       startSync();
     },
     // The funds screen, after the node stopped by itself: the same backup.
     "restart-node": () => { if (!ui.busy) startSync(); },
-    "restore-other": async () => {
-      // A second click while the node stops. A status refresh or a history
-      // load that runs is waited out by the Go side.
-      if (ui.leaving) return;
-      // Each backup has a folder of its own, so nothing is overwritten. A
-      // running node stops first.
-      ui.force = false;
-      // Money still on its way moves only while this node runs: ask first.
-      const ask = !ui.nodeStopped && (ui.screen === "done" || (ui.screen === "wallet" && isMoving(ui.status)));
-      ui.leaving = true;
-      setBusy(true);
-      try {
-        await api.RestoreOther(ask);
-      } catch (e) {
-        if (isCancel(e)) return; // answered No
-        throw e;
-      } finally { ui.leaving = false; setBusy(false); }
-      show("source");
+    // The funds and Transaction sent screens: the start screen, with the
+    // node running. It stops only once another backup is chosen.
+    "switch-backup": async () => {
+      // Money still on its way moves only while this node runs: leaving it
+      // asks first.
+      ui.moving = !ui.nodeStopped && (ui.screen === "done" || isMoving(ui.status));
+      ui.useName = ""; // the backup in use is the pick
+      await refreshState();
+      show("welcome");
     },
+    "back-funds": () => { if (!ui.busy) refreshStatus(); },
     "back-welcome": async () => { await refreshState(); show("welcome"); },
     "choose-workdir": async () => { const p = await api.ChooseWorkDir(); if (p) $("#workdir").value = p; },
     "apply-settings": applySettings,

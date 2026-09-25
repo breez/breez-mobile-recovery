@@ -5,7 +5,11 @@
   const emit = (n, d) => handlers[n] && handlers[n](d);
   const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
   const q = new URLSearchParams(location.search);
-  const hasNode = q.get("hasNode") === "1";
+  // ?running=1: the node of the backup in use runs and has synced, as after
+  // Switch backup, so the start screen offers Back to funds.
+  let running = q.get("running") === "1"; // a node helper runs
+  let synced = running; // and its last sync ended well
+  const hasNode = q.get("hasNode") === "1" || running;
   const scenario = q.get("scenario") || "channels";
   const slow = q.get("slow") || "";
   // ?restart=1: the first sync starts the node again twice, as a first
@@ -15,17 +19,41 @@
   let restarts = q.get("restart") === "1" ? 2 : 0;
   const crash = q.get("crash") || "";
   let crashes = crash ? 1 : 0; // once: Continue recovery then works
-  const crashed = "the node stopped unexpectedly. Continue recovery starts it again; Save log has the details";
-  const notRunning = "the node is not running. Continue recovery starts it";
-  let running = false; // a node helper runs
+  const crashed = "The node stopped unexpectedly. Check the logs for details. Continue recovery to restart the node.";
+  const notRunning = "The node is not running. Continue recovery to start it.";
   let stopped = false; // it stopped by itself
-  const snaps = [
-    { nodeId: "02e66bcb1f4a9d6b3c2a7f8e9d0c1b2a3f4e5d6c7b8a9f0e1d2c3b4a5f6e7d8c9b", modifiedTime: "2026-03-31T14:03:00Z", encrypted: false, encryptionType: "" },
-    { nodeId: "02f8439e7a6b5c4d3e2f1a0b9c8d7e6f5a4b3c2d1e0f9a8b7c6d5e4f3a2b1c0d9e", modifiedTime: "2023-07-30T09:12:00Z", encrypted: true, encryptionType: "Mnemonics12" },
-    { nodeId: "02c6b28e5d4c3b2a1f0e9d8c7b6a5f4e3d2c1b0a9f8e7d6c5b4a3f2e1d0c9b8a7f", modifiedTime: "2022-12-09T18:40:00Z", encrypted: true, encryptionType: "Mnemonics" },
-    { nodeId: "02b134bb9a8f7e6d5c4b3a2f1e0d9c8b7a6f5e4d3c2b1a0f9e8d7c6b5a4f3e2d1c", modifiedTime: "2021-10-17T11:00:00Z", encrypted: true, encryptionType: "PIN" },
-  ];
+  // Enough backups and restored apps that both lists scroll.
+  const idOf = (seed) => {
+    let x = seed, h = "";
+    while (h.length < 64) { x = (Math.imul(x, 1103515245) + 12345) >>> 0; h += x.toString(16).padStart(8, "0").slice(-6); }
+    return (seed % 3 ? "02" : "03") + h.slice(0, 64);
+  };
+  const encs = ["", "Mnemonics12", "Mnemonics", "Mnemonics", "Mnemonics12", "", "Mnemonics", "PIN", "Mnemonics", "", "Mnemonics12", "Mnemonics"];
+  const snaps = encs.map((enc, i) => ({
+    nodeId: i === 0 ? "02e66bcb1f4a9d6b3c2a7f8e9d0c1b2a3f4e5d6c7b8a9f0e1d2c3b4a5f6e7d8c9b" : idOf(i + 7),
+    modifiedTime: new Date(Date.UTC(2026, 2 - 5 * i, 31 - i, 14, 3 * i)).toISOString(),
+    encrypted: enc !== "", encryptionType: enc,
+  }));
   const nodeId = snaps[0].nodeId;
+  const base = "/home/roys/.breez-recovery/backups/";
+  // The first is in use; the second was opened after it, and still comes
+  // after it in the list.
+  const at = (d, h) => new Date(Date.UTC(2026, 8, d, h)).toISOString();
+  const restoredApps = !hasNode ? [] : [
+    { name: snaps[0].nodeId, lastOpened: at(24, 12), funds: { inChannels: 0, pending: 0, onchain: 0, settling: false, at: at(24, 12) } },
+    { name: snaps[1].nodeId, payments: 14, lastOpened: at(24, 13), funds: { inChannels: 0, pending: 15721, onchain: 1581900, at: at(24, 13) } },
+    { name: "zip-4c1d9a7e22b0f513", nodeId: "03a1c9e44b2f7d6e8a0b5c3d1e9f7a2b4c6d8e0f1a3b5c7d9e1f3a5b7c9d1e3f5a" },
+    { name: snaps[2].nodeId, payments: 3, lastOpened: at(23, 9), funds: { inChannels: 333210, pending: 0, onchain: 0, at: at(23, 9) } },
+    { name: snaps[3].nodeId, lastOpened: at(22, 18) },
+    { name: snaps[4].nodeId, payments: 212, lastOpened: at(22, 11), funds: { inChannels: 0, pending: 999, onchain: 0, settling: true, at: at(22, 11) } },
+    { name: snaps[5].nodeId, lastOpened: at(21, 16) },
+    { name: idOf(40), lastOpened: at(20, 10), payments: 1 },
+    { name: snaps[6].nodeId, lastOpened: at(19, 8) },
+    { name: "zip-9b03e7f1c4a2d856", nodeId: "" },
+    { name: idOf(41), lastOpened: at(17, 21) },
+    { name: idOf(42), lastOpened: at(15, 7) },
+  ];
+  let current = hasNode ? nodeId : "";
   const statuses = {
     channels: { nodeId, blockHeight: 967302, synced: true, peers: 8, onchainConfirmed: 0, onchainUnconfirmed: 0, inChannels: 1583210, inPending: 0, unresolved: 0, outgoing: 0, pending: [],
       channels: [
@@ -58,9 +86,13 @@
   const step = (m) => { lastSync = null; seq++; emit("sync", Object.assign({}, blank, { message: m })); };
   const header = () => { log("20:07:01  [recovery] Breez Recovery 0.1.0 on linux/amd64"); log("20:07:01  [recovery] Work dir: /home/roys/.breez-recovery"); };
   // A node that runs stops first; the page shows it.
-  const stopNode = async () => { if (!running) return; emit("stopping"); await sleep(1200); running = false; stopped = false; };
+  const stopNode = async () => { if (!running) return; emit("stopping"); await sleep(1200); running = synced = stopped = false; };
   const needNode = () => { if (stopped || !running) throw new Error(notRunning); };
-  const state = () => ({ version: "0.1.0", os: "linux", workDir: "/home/roys/.breez-recovery", nodeDir: hasNode ? "/home/roys/.breez-recovery/backups/02e66bcb1e3c97de679c0d5b2f831ac913e53acdc99542ed839c17b1079df489ea" : "", peers: "", hasNode, logPath: "", googleConfigured: true });
+  // App.confirmLeave, with the browser's own dialog.
+  const leave = (ask, what) => {
+    if (ask && running && !confirm(what + "?\n\nFunds of this app are still on their way and move only while it runs. Continue with it later to finish.\n\n" + what + " now?")) throw new Error(what.toLowerCase() + " cancelled");
+  };
+  const state = () => ({ version: "0.1.0", os: "linux", workDir: "/home/roys/.breez-recovery", nodeDir: current ? base + current : "", peers: "", hasNode: current !== "", logPath: "", googleConfigured: true, nodeSynced: running && synced });
   window.go = { main: { App: {
     GetState: async () => state(),
     ApplySettings: async () => { await stopNode(); return state(); },
@@ -77,12 +109,18 @@
     ChooseZip: async () => ({ path: "/home/roys/Downloads/backup.zip", name: "backup.zip", needsPhrase: true }),
     InspectZip: async (path) => ({ path, name: path.split("/").pop(), needsPhrase: true }),
     CheckPhrase: async (p) => { const n = p.split(" ").length; if (n !== 12 && n !== 24) throw new Error("expected 12 or 24 words, got " + n); return n === 12 ? "Mnemonics12" : "Mnemonics"; },
-    Restore: async () => {
-      progress("Downloading backup of node 02e66bcb1f4a... (from 2026-03-31 14:03)...");
+    Restore: async (req) => {
+      const name = req.source === "zip" ? "zip-4c1d9a7e22b0f513" : req.nodeId;
+      leave(req.ask, "Restore another backup");
+      if (running) { progress("Stopping the node..."); await sleep(1200); running = synced = false; }
+      if (current && name !== current) { emit("logreset"); header(); }
+      progress("Downloading backup of node " + name.slice(0, 12) + "... (from 2026-03-31 14:03)...");
       await sleep(1200);
       progress("Decrypting and placing the node files...");
       await sleep(slow === "restore" ? 600000 : 1000);
-      progress("Backup restored into /home/roys/.breez-recovery/backups/" + nodeId + ".");
+      progress("Backup restored into " + base + name + ".");
+      if (!restoredApps.some((a) => a.name === name)) restoredApps.push({ name });
+      current = name;
     },
     StartAndSync: async () => {
       stopped = false;
@@ -133,7 +171,8 @@
           await sleep(slow === "channels" && height === 860000 ? 600000 : 600);
         }
       } finally { syncing = false; }
-      if (crash === "1" && crashes && crashes--) setTimeout(() => { stopped = true; running = false; emit("nodestopped", crashed); }, 4000);
+      synced = true;
+      if (crash === "1" && crashes && crashes--) setTimeout(() => { stopped = true; running = synced = false; emit("nodestopped", crashed); }, 4000);
       return status;
     },
     GetStatus: async () => { needNode(); return status; },
@@ -156,14 +195,15 @@
     ValidateAddress: async (a) => { if (!/^(bc1|1|3)[a-zA-Z0-9]{20,}$/.test(a)) throw new Error("invalid"); },
     PrepareSweep: async (addr) => { needNode(); await sleep(600); return { address: addr, amount: 1581900, options: [{ confTarget: 2, fee: 1840, txid: "a" }, { confTarget: 6, fee: 920, txid: "b" }, { confTarget: 25, fee: 410, txid: "c" }] }; },
     BroadcastSweep: async () => { needNode(); await sleep(600); return "5f4e3d2c1b0a9f8e7d6c5b4a3f2e1d0c9b8a7f6e5d4c3b2a1f0e9d8c7b6a5f4e"; },
-    // The log so far goes to the folder of the backup in use.
-    RestoreOther: async () => { await stopNode(); if (hasNode) { emit("logreset"); header(); } },
-    RestoredApps: async () => hasNode ? [
-      { name: "02e66bcb1f4a9d6b3c2a7f8e9d0c1b2a3f4e5d6c7b8a9f0e1d2c3b4a5f6e7d8c9b", nodeId: "02e66bcb1f4a9d6b3c2a7f8e9d0c1b2a3f4e5d6c7b8a9f0e1d2c3b4a5f6e7d8c9b", dir: "/home/roys/.breez-recovery/backups/02e66bcb1f4a9d6b3c2a7f8e9d0c1b2a3f4e5d6c7b8a9f0e1d2c3b4a5f6e7d8c9b", current: true, lastOpened: "2026-09-24T12:01:00Z", funds: { inChannels: 0, pending: 0, onchain: 0, settling: false, at: "2026-09-24T12:01:00Z" } },
-      { name: "02f8439e7a6b5c4d3e2f1a0b9c8d7e6f5a4b3c2d1e0f9a8b7c6d5e4f3a2b1c0d9e", nodeId: "02f8439e7a6b5c4d3e2f1a0b9c8d7e6f5a4b3c2d1e0f9a8b7c6d5e4f3a2b1c0d9e", dir: "/home/roys/.breez-recovery/backups/02f8439e7a6b5c4d3e2f1a0b9c8d7e6f5a4b3c2d1e0f9a8b7c6d5e4f3a2b1c0d9e", current: false, payments: 14, lastOpened: "2026-09-24T13:40:00Z", funds: { inChannels: 0, pending: 15721, onchain: 1581900, at: "2026-09-24T13:40:00Z" } },
-      { name: "zip-4c1d9a7e22b0f513", nodeId: "03a1c9e44b2f7d6e8a0b5c3d1e9f7a2b4c6d8e0f1a3b5c7d9e1f3a5b7c9d1e3f5a", dir: "/home/roys/.breez-recovery/backups/zip-4c1d9a7e22b0f513", current: false },
-    ] : [],
-    UseRestored: async (name) => { await stopNode(); emit("logreset"); header(); progress("Continuing with the backup already restored in /home/roys/.breez-recovery/backups/" + name + "."); },
+    RestoredApps: async () => restoredApps.map((a) => Object.assign({ nodeId: a.name, dir: base + a.name }, a, { current: a.name === current })),
+    // App.UseRestored: the log so far goes to the folder of the backup in use.
+    UseRestored: async (name, ask) => {
+      if (name === current) return;
+      leave(ask, "Switch backup");
+      await stopNode(); emit("logreset"); header();
+      current = name;
+      progress("Continuing with the backup already restored in " + base + name + ".");
+    },
     Cancel: async () => {}, CopyText: async () => {}, OpenURL: async () => {},
     SaveHistory: async () => "/home/roys/breez-history-2026-09-17.csv",
     SaveLog: async () => "/home/roys/breez-recovery-2026-09-16.log", CopyLog: async () => {}, OpenWorkDir: async () => {},

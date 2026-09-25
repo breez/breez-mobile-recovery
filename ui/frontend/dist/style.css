@@ -18,6 +18,7 @@
   --shadow: 0 8px 30px rgba(12, 30, 60, 0.08);
   --radius: 16px;
   --mono: ui-monospace, "SF Mono", Menlo, Consolas, "Liberation Mono", monospace;
+  color-scheme: light dark; /* scrollbars follow the theme */
 }
 @media (prefers-color-scheme: dark) {
   :root {
@@ -257,6 +258,11 @@ input.invalid { border-color: var(--err); }
 
 /* lists */
 .list { display: grid; grid-template-columns: minmax(0, 1fr); gap: 8px; margin: 12px 0; }
+.list:focus-visible { outline: 2px solid var(--primary); outline-offset: 2px; border-radius: 12px; }
+/* a long list to pick from scrolls in a box (fitList in app.js); the
+   padding keeps the selected row's ring inside it, the margins keep the
+   rows where they were */
+.list.scroll { position: relative; overflow-y: auto; overscroll-behavior: contain; margin: 8px -4px; padding: 4px; }
 .item {
   display: flex; align-items: center; gap: 14px; padding: 12px 14px;
   border: 1px solid var(--line); border-radius: 12px; cursor: pointer; background: var(--card);
@@ -266,11 +272,15 @@ input.invalid { border-color: var(--err); }
 .item.selected { border-color: var(--primary); box-shadow: 0 0 0 3px var(--primary-soft); }
 .item.disabled { opacity: .55; cursor: not-allowed; }
 .item-main { flex: 1; min-width: 0; }
-.item-title { font-weight: 600; }
+/* one line whatever the width, so the rows of a list are the same height:
+   the text gives way, the tags keep their place */
+.item-title { font-weight: 600; display: flex; align-items: center; gap: 8px; line-height: 24px; }
+.item-title > span:first-child { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.item-title .tag { flex: none; }
 .item-sub { color: var(--muted); font-size: 13px; font-family: var(--mono); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .item-note { color: var(--muted); font-size: 13px; margin-top: 2px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .tag {
-  font-size: 12px; font-weight: 600; padding: 3px 8px; border-radius: 8px; white-space: nowrap;
+  font-size: 12px; line-height: 18px; font-weight: 600; padding: 3px 8px; border-radius: 8px; white-space: nowrap;
   background: var(--primary-soft); color: var(--primary-ink);
 }
 .tag.ok { background: var(--ok-soft); color: var(--ok); }

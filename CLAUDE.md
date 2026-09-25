@@ -63,10 +63,21 @@ on http://127.0.0.1:8765/. Query parameters pick the state: `?hasNode=1`,
 `?scenario=channels|pending|onchain`, `?slow=list|restore|sync|addresses|rescan1|rescan2|channels`
 holds a stage so it can be screenshotted, `?restart=1` starts the node
 again twice in the first sync, `?crash=1` (funds screen) and `?crash=sync`
-stop it by itself. The History screen is reached
+stop it by itself, `?running=1` starts with the node of the backup in use
+running and synced (the start screen offers Back to funds). The History
+screen is reached
 with `?hasNode=1`, Continue, then History (mock ledger in mock.js). The
+mock has 12 restored apps and 12 cloud backups, so both lists scroll; its
+questions (App.confirmLeave) are the browser's confirm. The
 mock's method list must match `ui/app.go`; add a stub when adding a bound
 method.
+
+The restored apps and the backups to pick scroll in a box (`fitList` in
+app.js): whole rows and half of the next, four at most, fewer when the
+window is short, so the buttons and Advanced settings stay in view (the
+mock in a 980x672 page: two and a half restored apps, three and a half
+backups). It needs rows of one height: every line of a row is one line
+(titles give way with an ellipsis, tags keep their place).
 
 The frontend talks to Go through `window.go.main.App.<Method>` and receives
 events through `window.runtime.EventsOn`: `progress` (a line of text),
@@ -404,15 +415,23 @@ Every value is rendered with textContent; keep it that way.
   real run, past 20 s in others; the cause is not established), so
   StopWithin returns once lnd logs "LTND: Shutdown complete" and the
   helper's exit ends the rest.
-  A crash never starts the node again: a waiting call fails with "the
+  A crash never starts the node again: a waiting call fails with "The
   node stopped unexpectedly", with none waiting the page gets
   `nodestopped`. A failed sync, or one stopped before the node was up
   (`nodeUp` in the reply), gets a new helper next time: the library's app
   may have started half way. One stopped later keeps its node. Stop
   pressed while an old helper stops starts no new one.
+  Switch backup (funds and Transaction sent screens) opens the start
+  screen with the node running: `State.nodeSynced` (the helper of the
+  backup in use runs and its last sync ended well) shows Back to funds,
+  and Continue recovery on that backup shows its funds without a new sync.
+  The node stops only when Continue recovery picks another backup
+  (UseRestored) or a restore begins (Restore, unless it continues with the
+  backup in use), each asking first when the page says funds are on their
+  way (`ask`, from the funds screen when Switch backup was pressed).
   Log per backup: it runs on across the helper's restarts. When the
-  backup in use changes (Restore another backup, switching, a restore of
-  another backup, a settings change) and on close, the lines so far are
+  backup in use changes (switching, a restore of another backup, a
+  settings change) and on close, the lines so far are
   appended to `recovery.log` in the old backup's folder and the page gets
   `logreset`.
   Closing while something runs asks first, then keeps the window, which

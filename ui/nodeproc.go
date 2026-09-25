@@ -9,6 +9,7 @@ import (
 	"os"
 	"os/exec"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/breez/breez-mobile-recovery/core"
@@ -34,8 +35,8 @@ const (
 )
 
 var (
-	errNodeCrashed    = errors.New("the node stopped unexpectedly. Continue recovery starts it again; Save log has the details")
-	errNodeNotRunning = errors.New("the node is not running. Continue recovery starts it")
+	errNodeCrashed    = errors.New("The node stopped unexpectedly. Check the logs for details. Continue recovery to restart the node.")
+	errNodeNotRunning = errors.New("The node is not running. Continue recovery to start it.")
 	errNodeStopped    = errors.New("the node was stopped")
 )
 
@@ -86,6 +87,10 @@ type nodeProc struct {
 	exited  bool
 
 	done chan struct{} // closed once Wait returned and the calls failed
+
+	// synced: its last sync ended well, so its funds show without another
+	// (Back to funds on the start screen).
+	synced atomic.Bool
 }
 
 // startNodeProc starts cmd as the helper of the backup folder dir.

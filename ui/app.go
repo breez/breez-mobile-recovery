@@ -381,12 +381,16 @@ type State struct {
 	HasNode          bool   `json:"hasNode"`
 	LogPath          string `json:"logPath"`
 	GoogleConfigured bool   `json:"googleConfigured"`
+	// NodeSynced: a node runs for the backup in use and its last sync ended
+	// well, so its funds show without a new sync (Back to funds).
+	NodeSynced bool `json:"nodeSynced"`
 }
 
 // GetState returns the current state.
 func (a *App) GetState() State {
 	c := a.c()
 	cfg := c.Config()
+	p := a.runningHelper()
 	return State{
 		Version:          version,
 		OS:               runtime.GOOS,
@@ -396,6 +400,7 @@ func (a *App) GetState() State {
 		HasNode:          c.HasRestoredNode(),
 		LogPath:          c.LogPath(),
 		GoogleConfigured: cfg.GoogleClientID != "",
+		NodeSynced:       p != nil && p.dir == c.NodeDir() && p.synced.Load(),
 	}
 }
 
@@ -517,11 +522,15 @@ type RestoreRequest struct {
 	ZipPath string `json:"zipPath"`
 	Phrase  string `json:"phrase"`
 	Force   bool   `json:"force"`
+	// Ask: funds of the backup in use are on their way; confirm before its
+	// node stops.
+	Ask bool `json:"ask"`
 }
 
 // Restore downloads and places the backup in a folder of its own. A backup
 // that is already restored on this computer is not downloaded again unless
-// the user asks for it.
+// the user asks for it. A node running on the backup in use stops first,
+// unless that backup is the one chosen and it is not restored again.
 func (a *App) Restore(req RestoreRequest) error {
 	return a.run("restore from "+req.Source, func(ctx context.Context) error {
 		c := a.c()
@@ -529,13 +538,46 @@ func (a *App) Restore(req RestoreRequest) error {
 		if err != nil {
 			return err
 		}
-		// Its folder may be the one restored again, and a restore is
-		// refused while a node runs.
-		a.stopHelper(false)
-		if a.logDir != "" && filepath.Base(a.logDir) != name {
-			a.logFor("")
+		use := false // continue with the backup already restored
+		if c.IsRestored(name) && !req.Force {
+			// Linux shows its own Yes/No buttons whatever labels are
+			// passed, so the question is a yes/no one.
+			answer, err := a.ask(wruntime.MessageDialogOptions{
+				Type:          wruntime.QuestionDialog,
+				Title:         "Already restored",
+				Message:       "Already restored here. Continue with it?\n\nNo restores it again.",
+				Buttons:       []string{"Yes", "No"},
+				DefaultButton: "Yes",
+			})
+			if err != nil {
+				return err
+			}
+			switch answer {
+			case "Yes", "Ok":
+				use = true
+			case "No":
+				req.Force = true
+			default:
+				return errors.New("restore cancelled")
+			}
 		}
-		if err := a.restore(ctx, c, name, req); err != nil {
+		if !use || name != c.CurrentBackup() {
+			// The backup in use changes, or its folder is restored again,
+			// and a restore is refused while a node runs.
+			if err := a.confirmLeave(req.Ask, "Restore another backup"); err != nil {
+				return err
+			}
+			a.stopHelper(false)
+			if a.logDir != "" && filepath.Base(a.logDir) != name {
+				a.logFor("")
+			}
+		}
+		if use {
+			err = c.UseBackup(name)
+		} else {
+			err = restoreFrom(ctx, c, req)
+		}
+		if err != nil {
 			return err
 		}
 		a.logFor(c.NodeDir())
@@ -543,29 +585,8 @@ func (a *App) Restore(req RestoreRequest) error {
 	})
 }
 
-func (a *App) restore(ctx context.Context, c *core.Core, name string, req RestoreRequest) error {
-	if c.IsRestored(name) && !req.Force {
-		// Linux shows its own Yes/No buttons whatever labels are
-		// passed, so the question is a yes/no one.
-		answer, err := a.ask(wruntime.MessageDialogOptions{
-			Type:          wruntime.QuestionDialog,
-			Title:         "Already restored",
-			Message:       "Already restored here. Continue with it?\n\nNo restores it again.",
-			Buttons:       []string{"Yes", "No"},
-			DefaultButton: "Yes",
-		})
-		if err != nil {
-			return err
-		}
-		switch answer {
-		case "Yes", "Ok":
-			return c.UseBackup(name)
-		case "No":
-			req.Force = true
-		default:
-			return errors.New("restore cancelled")
-		}
-	}
+// restoreFrom restores the backup req names.
+func restoreFrom(ctx context.Context, c *core.Core, req RestoreRequest) error {
 	switch req.Source {
 	case "google":
 		return c.GoogleRestore(ctx, req.NodeID, req.Phrase, req.Force)
@@ -577,32 +598,27 @@ func (a *App) restore(ctx context.Context, c *core.Core, name string, req Restor
 	return fmt.Errorf("unknown source %q", req.Source)
 }
 
-// RestoreOther prepares for restoring a different backup: a node running on
-// the backup in use stops, and the log so far goes to that backup's folder.
-// ask: money of this app is still on its way, which moves only while it
-// runs; confirm first.
-func (a *App) RestoreOther(ask bool) error {
-	if ask {
-		answer, err := a.ask(wruntime.MessageDialogOptions{
-			Type:          wruntime.QuestionDialog,
-			Title:         "Restore another backup?",
-			Message:       "Funds of this app are still on their way and move only while it runs. Restore this backup again later to finish.\n\nRestore another backup now?",
-			Buttons:       []string{"Yes", "No"},
-			DefaultButton: "No",
-			CancelButton:  "No",
-		})
-		if err != nil {
-			return err
-		}
-		if answer != "Yes" && answer != "Ok" {
-			return errors.New("restore another backup cancelled")
-		}
+// confirmLeave asks before the node of the backup in use stops for what
+// ("Switch backup", "Restore another backup") while funds of that app are on
+// their way (ask; the page knows): they move only while it runs.
+func (a *App) confirmLeave(ask bool, what string) error {
+	if !ask || a.runningHelper() == nil {
+		return nil
 	}
-	// Wait out a status refresh or a history load instead of refusing.
-	a.opMu.Lock()
-	defer a.opMu.Unlock()
-	a.stopHelper(true)
-	a.logFor("")
+	answer, err := a.ask(wruntime.MessageDialogOptions{
+		Type:          wruntime.QuestionDialog,
+		Title:         what + "?",
+		Message:       "Funds of this app are still on their way and move only while it runs. Continue with it later to finish.\n\n" + what + " now?",
+		Buttons:       []string{"Yes", "No"},
+		DefaultButton: "No",
+		CancelButton:  "No",
+	})
+	if err != nil {
+		return err
+	}
+	if answer != "Yes" && answer != "Ok" {
+		return errors.New(strings.ToLower(what) + " cancelled")
+	}
 	return nil
 }
 
@@ -610,8 +626,10 @@ func (a *App) RestoreOther(ask bool) error {
 func (a *App) RestoredApps() []core.RestoredBackup { return a.c().RestoredBackups() }
 
 // UseRestored continues with another backup restored on this computer. A
-// node running on the backup in use stops first.
-func (a *App) UseRestored(name string) error {
+// node running on the backup in use stops first; ask: funds of that app
+// are on their way, confirm first.
+func (a *App) UseRestored(name string, ask bool) error {
+	// Wait out a status refresh or a history load instead of refusing.
 	a.opMu.Lock()
 	defer a.opMu.Unlock()
 	c := a.c()
@@ -619,6 +637,9 @@ func (a *App) UseRestored(name string) error {
 		return fmt.Errorf("no restored backup %q", name)
 	}
 	if name != c.CurrentBackup() {
+		if err := a.confirmLeave(ask, "Switch backup"); err != nil {
+			return err
+		}
 		a.stopHelper(true)
 		a.logFor("")
 		if err := c.UseBackup(name); err != nil {
@@ -675,6 +696,7 @@ func (a *App) syncOnHelper(ctx context.Context) (helperMessage, error) {
 			}
 		}
 		m, err := p.call(ctx, helperRequest{Call: callStartAndSync}, a.cancelWait, a.log.tool)
+		p.synced.Store(err == nil)
 		if !errors.Is(err, core.ErrRestartRequired) {
 			return m, err
 		}
