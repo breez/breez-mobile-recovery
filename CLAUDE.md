@@ -74,10 +74,16 @@ method.
 
 The restored apps and the backups to pick scroll in a box (`fitList` in
 app.js): whole rows and half of the next, four at most, fewer when the
-window is short, so the buttons and Advanced settings stay in view (the
-mock in a 980x672 page: two and a half restored apps, three and a half
-backups). It needs rows of one height: every line of a row is one line
-(titles give way with an ellipsis, tags keep their place).
+window is short or an error shows, down to one and a half, so the buttons
+and Advanced settings stay in view. In the mock at the default window
+(980x672 page) that is two and a half restored apps (one and a half with
+an error) and four and a half backups; at 1100x800, three and a half
+restored apps with Back to funds, four and a half without. The three-line
+restored rows are what limits it; a taller default window does not fit
+1366x768 or 150 % scaled 1080p screens. It needs rows of one height: every
+line of a row is one line (titles give way with an ellipsis, tags keep
+their place). Hover darkens a row's outline; the pick has a blue one twice
+as thick and a ring, so the two never look alike.
 
 The frontend talks to Go through `window.go.main.App.<Method>` and receives
 events through `window.runtime.EventsOn`: `progress` (a line of text),
@@ -426,9 +432,16 @@ Every value is rendered with textContent; keep it that way.
   backup in use runs and its last sync ended well) shows Back to funds,
   and Continue recovery on that backup shows its funds without a new sync.
   The node stops only when Continue recovery picks another backup
-  (UseRestored) or a restore begins (Restore, unless it continues with the
-  backup in use), each asking first when the page says funds are on their
-  way (`ask`, from the funds screen when Switch backup was pressed).
+  (UseRestored), a restore begins (Restore, unless it continues with the
+  backup in use) or Apply in Advanced settings changes them
+  (ApplySettings; the same settings leave the node alone), each asking
+  first when the page says funds are on their way (`ask`, from the funds
+  screen when Switch backup was pressed). The question names "the app in
+  use": the start screen may have another backup picked. Switch backup
+  waits for a call of the funds screen (History, a refresh) to end, so
+  the screen it opens does not follow and the node is free. After a crash
+  the banner keeps the crash message: a later call only says the node is
+  not running, which the funds screen already says.
   Log per backup: it runs on across the helper's restarts. When the
   backup in use changes (switching, a restore of another backup, a
   settings change) and on close, the lines so far are

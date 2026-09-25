@@ -90,12 +90,21 @@
   const needNode = () => { if (stopped || !running) throw new Error(notRunning); };
   // App.confirmLeave, with the browser's own dialog.
   const leave = (ask, what) => {
-    if (ask && running && !confirm(what + "?\n\nFunds of this app are still on their way and move only while it runs. Continue with it later to finish.\n\n" + what + " now?")) throw new Error(what.toLowerCase() + " cancelled");
+    if (ask && running && !confirm(what + "?\n\nFunds of the app in use are still on their way and move only while its node runs. Continue with it later to finish.\n\n" + what + " now?")) throw new Error(what.toLowerCase() + " cancelled");
   };
-  const state = () => ({ version: "0.1.0", os: "linux", workDir: "/home/roys/.breez-recovery", nodeDir: current ? base + current : "", peers: "", hasNode: current !== "", logPath: "", googleConfigured: true, nodeSynced: running && synced });
+  const settings = { workDir: "/home/roys/.breez-recovery", peers: "" };
+  const state = () => ({ version: "0.1.0", os: "linux", workDir: settings.workDir, nodeDir: current ? base + current : "", peers: settings.peers, hasNode: current !== "", logPath: "", googleConfigured: true, nodeSynced: running && synced });
   window.go = { main: { App: {
     GetState: async () => state(),
-    ApplySettings: async () => { await stopNode(); return state(); },
+    // App.ApplySettings: the same settings leave a running node alone.
+    ApplySettings: async (s, ask) => {
+      const next = { workDir: s.workDir.trim(), peers: s.peers.trim() };
+      if (next.workDir === settings.workDir && next.peers === settings.peers && running) return state();
+      leave(ask, "Apply settings");
+      await stopNode();
+      Object.assign(settings, next);
+      return state();
+    },
     GetLog: async () => ["20:07:01  [recovery] Breez Recovery 0.1.0 on linux/amd64", "20:07:01  [recovery] Work dir: /home/roys/.breez-recovery"],
     ListGoogle: async () => {
       emit("signin", { provider: "google", url: "https://accounts.google.com/o/oauth2/v2/auth?client_id=463327817067-pp4c.apps.googleusercontent.com&redirect_uri=http%3A%2F%2F127.0.0.1%3A45401%2F&scope=drive.appdata" });
@@ -111,7 +120,7 @@
     CheckPhrase: async (p) => { const n = p.split(" ").length; if (n !== 12 && n !== 24) throw new Error("expected 12 or 24 words, got " + n); return n === 12 ? "Mnemonics12" : "Mnemonics"; },
     Restore: async (req) => {
       const name = req.source === "zip" ? "zip-4c1d9a7e22b0f513" : req.nodeId;
-      leave(req.ask, "Restore another backup");
+      leave(req.ask, name === current ? "Restore it again" : "Restore another backup");
       if (running) { progress("Stopping the node..."); await sleep(1200); running = synced = false; }
       if (current && name !== current) { emit("logreset"); header(); }
       progress("Downloading backup of node " + name.slice(0, 12) + "... (from 2026-03-31 14:03)...");

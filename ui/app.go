@@ -411,15 +411,25 @@ type Settings struct {
 }
 
 // ApplySettings replaces the session configuration. A running node stops
-// first: it runs with the settings it was started with. It refuses while an
-// operation runs.
-func (a *App) ApplySettings(s Settings) (State, error) {
+// first: it runs with the settings it was started with; ask: funds of the
+// app in use are on their way, confirm first. The same settings leave a
+// running node alone. It refuses while an operation runs.
+func (a *App) ApplySettings(s Settings, ask bool) (State, error) {
 	if !a.opMu.TryLock() {
 		return State{}, errBusy
 	}
 	defer a.opMu.Unlock()
 	if strings.TrimSpace(s.WorkDir) == "" {
 		return State{}, errors.New("the work folder cannot be empty")
+	}
+	// With no node, the same settings still start the session again: that
+	// retries a work folder another program held.
+	cfg := a.c().Config()
+	if strings.TrimSpace(s.WorkDir) == cfg.WorkDir && strings.TrimSpace(s.Peers) == cfg.Peers && a.runningHelper() != nil {
+		return a.GetState(), nil
+	}
+	if err := a.confirmLeave(ask, "Apply settings"); err != nil {
+		return State{}, err
 	}
 	a.stopHelper(true)
 	a.coreMu.Lock()
@@ -564,7 +574,11 @@ func (a *App) Restore(req RestoreRequest) error {
 		if !use || name != c.CurrentBackup() {
 			// The backup in use changes, or its folder is restored again,
 			// and a restore is refused while a node runs.
-			if err := a.confirmLeave(req.Ask, "Restore another backup"); err != nil {
+			what := "Restore another backup"
+			if name == c.CurrentBackup() {
+				what = "Restore it again"
+			}
+			if err := a.confirmLeave(req.Ask, what); err != nil {
 				return err
 			}
 			a.stopHelper(false)
@@ -599,8 +613,10 @@ func restoreFrom(ctx context.Context, c *core.Core, req RestoreRequest) error {
 }
 
 // confirmLeave asks before the node of the backup in use stops for what
-// ("Switch backup", "Restore another backup") while funds of that app are on
-// their way (ask; the page knows): they move only while it runs.
+// ("Switch backup", "Restore another backup", "Restore it again", "Apply
+// settings") while funds of that app are on their way (ask; the page
+// knows): they move only while it runs. The question names the app in use:
+// it is asked on the start screen, where another backup may be picked.
 func (a *App) confirmLeave(ask bool, what string) error {
 	if !ask || a.runningHelper() == nil {
 		return nil
@@ -608,7 +624,7 @@ func (a *App) confirmLeave(ask bool, what string) error {
 	answer, err := a.ask(wruntime.MessageDialogOptions{
 		Type:          wruntime.QuestionDialog,
 		Title:         what + "?",
-		Message:       "Funds of this app are still on their way and move only while it runs. Continue with it later to finish.\n\n" + what + " now?",
+		Message:       "Funds of the app in use are still on their way and move only while its node runs. Continue with it later to finish.\n\n" + what + " now?",
 		Buttons:       []string{"Yes", "No"},
 		DefaultButton: "No",
 		CancelButton:  "No",

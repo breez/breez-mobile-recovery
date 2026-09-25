@@ -452,7 +452,7 @@ func TestLogPerBackup(t *testing.T) {
 	if got := strings.Join(w.started(), ","); got != "backup-aaaa,backup-bbbb" {
 		t.Errorf("helpers %s", got)
 	}
-	if _, err := w.a.ApplySettings(Settings{WorkDir: t.TempDir()}); err != nil {
+	if _, err := w.a.ApplySettings(Settings{WorkDir: t.TempDir()}, false); err != nil {
 		t.Fatalf("settings after a node ran: %v", err)
 	}
 	// The old work folder is free for another program.
@@ -476,23 +476,42 @@ func TestLogPerBackup(t *testing.T) {
 }
 
 // answers makes the window answer a question by its title, "No" when the
-// title is not in the map, and returns the titles asked so far.
-func (w *window) answers(by map[string]string) func() []string {
+// title is not in the map, and returns the questions asked so far.
+func (w *window) answers(by map[string]string) func() []wruntime.MessageDialogOptions {
 	var mu sync.Mutex
-	var asked []string
+	var asked []wruntime.MessageDialogOptions
 	w.a.ask = func(o wruntime.MessageDialogOptions) (string, error) {
 		mu.Lock()
 		defer mu.Unlock()
-		asked = append(asked, o.Title)
+		asked = append(asked, o)
 		if a, ok := by[o.Title]; ok {
 			return a, nil
 		}
 		return "No", nil
 	}
-	return func() []string {
+	return func() []wruntime.MessageDialogOptions {
 		mu.Lock()
 		defer mu.Unlock()
-		return append([]string(nil), asked...)
+		return append([]wruntime.MessageDialogOptions(nil), asked...)
+	}
+}
+
+// titles joins the titles of questions.
+func titles(qs []wruntime.MessageDialogOptions) string {
+	var s []string
+	for _, q := range qs {
+		s = append(s, q.Title)
+	}
+	return strings.Join(s, ",")
+}
+
+// leaving checks the question asked before the node of the backup in use
+// stops: it names that app, since it is asked where another one may be
+// picked, and ends with what stops it.
+func leaving(t *testing.T, q wruntime.MessageDialogOptions, what string) {
+	t.Helper()
+	if q.Title != what+"?" || !strings.HasPrefix(q.Message, "Funds of the app in use are still on their way") || !strings.HasSuffix(q.Message, "\n\n"+what+" now?") {
+		t.Errorf("question %q: %q", q.Title, q.Message)
 	}
 }
 
@@ -597,9 +616,10 @@ func TestSwitchToAnotherBackupStopsTheNode(t *testing.T) {
 	if err := w.a.UseRestored("backup-bbbb", true); err != nil {
 		t.Fatal(err)
 	}
-	if got := strings.Join(asked(), ","); got != "Switch backup?,Switch backup?" {
+	if got := titles(asked()); got != "Switch backup?,Switch backup?" {
 		t.Errorf("asked %s", got)
 	}
+	leaving(t, asked()[0], "Switch backup")
 	if w.a.runningHelper() != nil || w.a.c().CurrentBackup() != "backup-bbbb" {
 		t.Error("the node still runs, or the backup did not change")
 	}
@@ -634,6 +654,13 @@ func TestRestoreStopsTheNodeFirst(t *testing.T) {
 		t.Fatalf("the backup in use: %v", err)
 	}
 	w.kept(p, "continuing with the backup in use")
+	// Restoring the backup in use again stops its node too.
+	answer["Already restored"] = "No"
+	if err := restore("backup-aaaa"); err == nil || err.Error() != "restore it again cancelled" {
+		t.Errorf("restore again answered No: %v", err)
+	}
+	w.kept(p, "a No to restoring the backup in use again")
+	answer["Already restored"] = "Yes"
 	if err := restore("backup-bbbb"); err == nil || err.Error() != "restore another backup cancelled" {
 		t.Errorf("restore answered No: %v", err)
 	}
@@ -652,9 +679,53 @@ func TestRestoreStopsTheNodeFirst(t *testing.T) {
 	if err := restore("backup-aaaa"); err != nil {
 		t.Fatal(err)
 	}
-	want := "Already restored,Already restored,Restore another backup?,Already restored,Restore another backup?,Already restored"
-	if got := strings.Join(asked(), ","); got != want {
+	want := "Already restored,Already restored,Restore it again?,Already restored,Restore another backup?,Already restored,Restore another backup?,Already restored"
+	qs := asked()
+	if got := titles(qs); got != want {
 		t.Errorf("asked %s", got)
+	} else {
+		leaving(t, qs[2], "Restore it again")
+		leaving(t, qs[4], "Restore another backup")
+	}
+}
+
+// Apply in Advanced settings, on the start screen next to Back to funds,
+// leaves a running node alone when nothing changed, and asks before it
+// stops the node while funds of the app in use are on their way.
+func TestApplySettingsWithTheNodeRunning(t *testing.T) {
+	root := t.TempDir()
+	restored(t, root, "backup-aaaa", true)
+	w := newWindow(t, root, "sync")
+	if _, err := w.a.StartAndSync(); err != nil {
+		t.Fatal(err)
+	}
+	p := w.a.runningHelper()
+	answer := map[string]string{"Apply settings?": "No"}
+	asked := w.answers(answer)
+	peers := w.a.c().Config().Peers
+	if st, err := w.a.ApplySettings(Settings{WorkDir: " " + root + " ", Peers: peers}, true); err != nil || !st.NodeSynced {
+		t.Errorf("the same settings: %+v, %v", st, err)
+	}
+	w.kept(p, "the same settings")
+	other := Settings{WorkDir: root, Peers: "127.0.0.1:8333"}
+	if _, err := w.a.ApplySettings(other, true); err == nil || err.Error() != "apply settings cancelled" {
+		t.Errorf("settings answered No: %v", err)
+	}
+	if w.a.c().Config().Peers != peers {
+		t.Error("a No changed the settings")
+	}
+	w.kept(p, "a No")
+	answer["Apply settings?"] = "Yes"
+	if st, err := w.a.ApplySettings(other, true); err != nil || st.NodeSynced || st.Peers != other.Peers {
+		t.Errorf("settings answered Yes: %+v, %v", st, err)
+	}
+	if w.a.runningHelper() != nil {
+		t.Error("the node still runs after the settings changed")
+	}
+	if qs := asked(); titles(qs) != "Apply settings?,Apply settings?" {
+		t.Errorf("asked %s", titles(qs))
+	} else {
+		leaving(t, qs[0], "Apply settings")
 	}
 }
 

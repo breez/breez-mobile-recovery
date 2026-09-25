@@ -31,6 +31,7 @@
     currentName: "",      // restored backup in use
     restored: new Set(),  // names (node ids) of the backups restored here
     nodeStopped: false,   // the node stopped by itself; Continue recovery starts it
+    stopMsg: "",          // what the page was told when it stopped
   };
 
   // ---------------------------------------------------------------- helpers
@@ -88,14 +89,16 @@
   }
 
   function setBusy(b) { ui.busy = b; }
+  // Resolves once no call runs.
+  async function idle() { while (ui.busy) await new Promise((r) => setTimeout(r, 50)); }
 
   // ---------------------------------------------------------------- lists
 
   // The restored apps and the backups can be many. A long list scrolls in a
   // box that shows whole rows and half of the next, so it reads as one that
-  // scrolls: four rows at most, fewer when the window is short, so that the
-  // buttons and Advanced settings under it stay in view. Its rows are all
-  // the same height.
+  // scrolls: four rows at most, fewer when the window is short or an error
+  // shows, down to one and a half, so that the buttons and Advanced settings
+  // under it stay in view. Its rows are all the same height.
   function fitList(list) {
     list.classList.remove("scroll");
     list.style.maxHeight = "";
@@ -107,10 +110,12 @@
     const end = sum ? sum.getBoundingClientRect().bottom + parseFloat(getComputedStyle(card).paddingBottom) : card.getBoundingClientRect().bottom;
     const over = end - main.getBoundingClientRect().top + main.scrollTop + parseFloat(getComputedStyle(main).paddingBottom) - main.clientHeight;
     const row = rows[0].offsetHeight, pitch = rows[1].offsetTop - rows[0].offsetTop;
-    const n = Math.max(2, Math.min(4, Math.floor((list.offsetHeight - Math.max(0, over) - row / 2) / pitch)));
-    if (n >= rows.length) return;
-    list.classList.add("scroll");
-    list.style.maxHeight = parseFloat(getComputedStyle(list).paddingTop) + n * pitch + Math.round(row / 2) + "px";
+    const room = list.offsetHeight - Math.max(0, over);
+    list.classList.add("scroll"); // its padding counts
+    const pad = parseFloat(getComputedStyle(list).paddingTop), peek = Math.round(row / 2);
+    const n = Math.max(1, Math.min(4, Math.floor((room - pad - peek) / pitch)));
+    if (n >= rows.length) { list.classList.remove("scroll"); return; }
+    list.style.maxHeight = pad + n * pitch + peek + "px";
     reveal(list, list.querySelector(".selected"));
   }
   function fitLists() { fitList($("#restored-list")); fitList($("#snapshot-list")); }
@@ -228,8 +233,10 @@
     $("#existing-summary").classList.toggle("hidden", many);
     $("#restored-list").classList.toggle("hidden", !many);
     $("#existing-lead").textContent = many
-      ? "Breez apps restored on this computer. Choose the one to continue with, or restore another backup."
-      : "A Breez app restored earlier is on this computer. Continue to sync it and move the funds, or restore another backup.";
+      ? "Choose the restored Breez app to continue with, or restore another backup."
+      : ui.state.nodeSynced
+        ? "A Breez app restored earlier is on this computer and its node is running. Continue recovery to see its funds, or restore another backup."
+        : "A Breez app restored earlier is on this computer. Continue to sync it and move the funds, or restore another backup.";
     const list = $("#restored-list");
     list.innerHTML = "";
     if (!many) return;
@@ -275,10 +282,13 @@
 
   async function applySettings() {
     try {
-      // A running node stops first, which shows while it takes.
-      ui.state = await api.ApplySettings({ workDir: $("#workdir").value, peers: $("#peers").value });
+      // A running node stops first, which shows while it takes, and asks
+      // first while funds of the app in use are on their way.
+      ui.state = await api.ApplySettings({ workDir: $("#workdir").value, peers: $("#peers").value }, ui.moving);
       await refreshState();
-    } catch (e) { showError(errMsg(e)); }
+    } catch (e) {
+      if (!isCancel(e)) showError(errMsg(e)); // answered No: its node runs on
+    }
     show("welcome");
   }
 
@@ -549,9 +559,13 @@
   }
 
   // The node stopped by itself. The screens that need it go back to the
-  // funds, which offer to start it again.
+  // funds, which offer to start it again. A call that fails after that only
+  // says it is not running, as the funds screen does: the banner keeps the
+  // first message, which says what happened.
   function nodeStopped(msg) {
+    if (ui.nodeStopped) msg = ui.stopMsg;
     ui.nodeStopped = true;
+    ui.stopMsg = msg;
     if (["wallet", "history", "sweep", "done"].includes(ui.screen)) {
       resetSweep();
       renderWallet();
@@ -678,14 +692,16 @@
 
   // While money is on its way (a closed channel being collected, a close
   // maturing, an unconfirmed balance) the funds screen keeps itself current,
-  // quietly: no busy state, and errors wait for the next manual refresh,
-  // except that the node is gone.
+  // quietly: errors wait for the next manual refresh, except that the node
+  // is gone. It is busy meanwhile, so Switch backup waits for it.
   function isMoving(st) {
     return !!st && !!(st.pending.length || st.unresolved || st.outgoing || st.onchainUnconfirmed > 0 || (st.closedOnChain || []).some((c) => c.collect > 0));
   }
   setInterval(async () => {
     if (ui.screen !== "wallet" || ui.busy || ui.nodeStopped || !isMoving(ui.status)) return;
+    setBusy(true);
     try { ui.status = await api.GetStatus(); if (ui.screen === "wallet") renderWallet(); } catch (e) { if (isNodeGone(e)) nodeStopped(errMsg(e)); }
+    finally { setBusy(false); }
   }, 30000);
 
   // ---------------------------------------------------------------- history
@@ -703,11 +719,13 @@
   function fmtTime(t) { return t ? new Date(t * 1000).toLocaleDateString(undefined, { dateStyle: "medium" }) : ""; }
 
   async function openHistory() {
+    const from = ui.screen;
     setBusy(true);
     try {
       const h = await api.GetHistory();
       renderHistory(h);
-      show("history");
+      // Unless another screen was opened meanwhile.
+      if (ui.screen === from) show("history");
     } catch (e) { nodeError(e); }
     finally { setBusy(false); }
   }
@@ -893,6 +911,9 @@
     // The funds and Transaction sent screens: the start screen, with the
     // node running. It stops only once another backup is chosen.
     "switch-backup": async () => {
+      // A call of the funds screen (History, a refresh) ends first, so the
+      // screen it opens does not follow, and the node is free.
+      await idle();
       // Money still on its way moves only while this node runs: leaving it
       // asks first.
       ui.moving = !ui.nodeStopped && (ui.screen === "done" || isMoving(ui.status));
