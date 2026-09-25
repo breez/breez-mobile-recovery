@@ -402,7 +402,7 @@ func (c *Core) GoogleRestore(ctx context.Context, nodeID, mnemonic string, force
 	if err != nil {
 		return err
 	}
-	id, err := c.placeBackup(snap.NodeID, decoded, force)
+	id, err := c.placeBackup(snap.NodeID, SourceGoogle, decoded, force)
 	if err != nil {
 		return err
 	}
@@ -473,7 +473,7 @@ func (c *Core) ICloudRestore(ctx context.Context, nodeID, mnemonic string, force
 	if err != nil {
 		return err
 	}
-	if _, err := c.placeBackup(snap.NodeID, decoded, force); err != nil {
+	if _, err := c.placeBackup(snap.NodeID, SourceICloud, decoded, force); err != nil {
 		return err
 	}
 	c.progressf("Backup restored into %s.", c.dir())
@@ -514,7 +514,7 @@ func (c *Core) ZipRestore(zipPath, mnemonic string, force bool) error {
 	if err != nil {
 		return err
 	}
-	if _, err := c.placeBackup(name, decoded, force); err != nil {
+	if _, err := c.placeBackup(name, SourceFile, decoded, force); err != nil {
 		return err
 	}
 	// The folder is named after the file; the list of restored backups

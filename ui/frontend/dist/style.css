@@ -280,6 +280,11 @@ input.invalid { border-color: var(--err); }
 .item-title > span:first-child { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .item-title .tag { flex: none; }
 .item-sub { color: var(--muted); font-size: 13px; line-height: 18px; font-family: var(--mono); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+/* a restored app's line: where from in the text font, then the node id,
+   which gives way in its middle (fitIds in app.js); one line */
+.item-sub.plain { font-family: inherit; display: flex; align-items: baseline; height: 18px; }
+.item-from { flex: none; white-space: pre; }
+.mid-id { flex: none; white-space: nowrap; font-family: var(--mono); }
 .item-note { color: var(--muted); font-size: 13px; line-height: 18px; margin-top: 2px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .tag {
   font-size: 12px; line-height: 18px; font-weight: 600; padding: 3px 8px; border-radius: 8px; white-space: nowrap;

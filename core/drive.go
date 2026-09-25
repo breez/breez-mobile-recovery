@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"net/http"
 	"sort"
 	"strings"
 	"time"
@@ -25,6 +26,17 @@ const (
 	driveBackupTimeProp      = "backupModifiedTimestamp"
 )
 
+// driveClient, when set, carries the Drive calls in place of the signed-in
+// connection to Google: the tests answer them.
+var driveClient *http.Client
+
+func driveService(ctx context.Context, auth *googleAuth) (*drive.Service, error) {
+	if driveClient != nil {
+		return drive.NewService(ctx, option.WithHTTPClient(driveClient))
+	}
+	return drive.NewService(ctx, option.WithTokenSource(auth.src))
+}
+
 // listDriveSnapshots lists the backups in the account's Breez app folder.
 // It only reads. The breez library has a listing of its own, but it needs
 // the library initialised on a folder before the user has chosen a backup,
@@ -34,7 +46,7 @@ const (
 // folder's own time is not used: restoring a backup updates the folder and
 // would make an old backup look new.
 func listDriveSnapshots(ctx context.Context, auth *googleAuth) ([]Snapshot, error) {
-	svc, err := drive.NewService(ctx, option.WithTokenSource(auth.src))
+	svc, err := driveService(ctx, auth)
 	if err != nil {
 		return nil, err
 	}
@@ -121,7 +133,7 @@ type driveBackup struct {
 // restored before it has decrypted anything; and it downloads through the
 // system's temp folder, which fails across drives on Windows.)
 func downloadDriveBackup(ctx context.Context, auth *googleAuth, nodeID string) (*driveBackup, error) {
-	svc, err := drive.NewService(ctx, option.WithTokenSource(auth.src))
+	svc, err := driveService(ctx, auth)
 	if err != nil {
 		return nil, err
 	}

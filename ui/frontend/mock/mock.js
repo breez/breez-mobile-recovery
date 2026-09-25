@@ -39,19 +39,20 @@
   // The first is in use; the second was opened after it, and still comes
   // after it in the list.
   const at = (d, h) => new Date(Date.UTC(2026, 8, d, h)).toISOString();
+  // Where each was restored from: "" is not known (an earlier release).
   const restoredApps = !hasNode ? [] : [
-    { name: snaps[0].nodeId, lastOpened: at(24, 12), funds: { inChannels: 0, pending: 0, onchain: 0, settling: false, at: at(24, 12) } },
-    { name: snaps[1].nodeId, payments: 14, lastOpened: at(24, 13), funds: { inChannels: 0, pending: 15721, onchain: 1581900, at: at(24, 13) } },
-    { name: "zip-4c1d9a7e22b0f513", nodeId: "03a1c9e44b2f7d6e8a0b5c3d1e9f7a2b4c6d8e0f1a3b5c7d9e1f3a5b7c9d1e3f5a" },
-    { name: snaps[2].nodeId, payments: 3, lastOpened: at(23, 9), funds: { inChannels: 333210, pending: 0, onchain: 0, at: at(23, 9) } },
-    { name: snaps[3].nodeId, lastOpened: at(22, 18) },
-    { name: snaps[4].nodeId, payments: 212, lastOpened: at(22, 11), funds: { inChannels: 0, pending: 999, onchain: 0, settling: true, at: at(22, 11) } },
-    { name: snaps[5].nodeId, lastOpened: at(21, 16) },
-    { name: idOf(40), lastOpened: at(20, 10), payments: 1 },
-    { name: snaps[6].nodeId, lastOpened: at(19, 8) },
-    { name: "zip-9b03e7f1c4a2d856", nodeId: "" },
-    { name: idOf(41), lastOpened: at(17, 21) },
-    { name: idOf(42), lastOpened: at(15, 7) },
+    { name: snaps[0].nodeId, source: "google", lastOpened: at(24, 12), funds: { inChannels: 0, pending: 0, onchain: 0, settling: false, at: at(24, 12) } },
+    { name: snaps[1].nodeId, source: "icloud", payments: 14, lastOpened: at(24, 13), funds: { inChannels: 0, pending: 15721, onchain: 1581900, at: at(24, 13) } },
+    { name: "zip-4c1d9a7e22b0f513", source: "file", nodeId: "03a1c9e44b2f7d6e8a0b5c3d1e9f7a2b4c6d8e0f1a3b5c7d9e1f3a5b7c9d1e3f5a" },
+    { name: snaps[2].nodeId, source: "google", payments: 3, lastOpened: at(23, 9), funds: { inChannels: 333210, pending: 0, onchain: 0, at: at(23, 9) } },
+    { name: snaps[3].nodeId, source: "", lastOpened: at(22, 18) },
+    { name: snaps[4].nodeId, source: "icloud", payments: 212, lastOpened: at(22, 11), funds: { inChannels: 0, pending: 999, onchain: 0, settling: true, at: at(22, 11) } },
+    { name: snaps[5].nodeId, source: "google", lastOpened: at(21, 16) },
+    { name: idOf(40), source: "", lastOpened: at(20, 10), payments: 1 },
+    { name: snaps[6].nodeId, source: "icloud", lastOpened: at(19, 8) },
+    { name: "zip-9b03e7f1c4a2d856", source: "file", nodeId: "" },
+    { name: idOf(41), source: "google", lastOpened: at(17, 21) },
+    { name: idOf(42), source: "", lastOpened: at(15, 7) },
   ];
   let current = hasNode ? nodeId : "";
   const statuses = {
@@ -128,7 +129,11 @@
       progress("Decrypting and placing the node files...");
       await sleep(slow === "restore" ? 600000 : 1000);
       progress("Backup restored into " + base + name + ".");
-      if (!restoredApps.some((a) => a.name === name)) restoredApps.push({ name });
+      // Restoring again replaces the folder, and with it where it came from.
+      const source = req.source === "zip" ? "file" : req.source;
+      const app = restoredApps.find((a) => a.name === name);
+      if (app) app.source = source;
+      else restoredApps.push({ name, source });
       current = name;
     },
     StartAndSync: async () => {
@@ -204,7 +209,7 @@
     ValidateAddress: async (a) => { if (!/^(bc1|1|3)[a-zA-Z0-9]{20,}$/.test(a)) throw new Error("invalid"); },
     PrepareSweep: async (addr) => { needNode(); await sleep(600); return { address: addr, amount: 1581900, options: [{ confTarget: 2, fee: 1840, txid: "a" }, { confTarget: 6, fee: 920, txid: "b" }, { confTarget: 25, fee: 410, txid: "c" }] }; },
     BroadcastSweep: async () => { needNode(); await sleep(600); return "5f4e3d2c1b0a9f8e7d6c5b4a3f2e1d0c9b8a7f6e5d4c3b2a1f0e9d8c7b6a5f4e"; },
-    RestoredApps: async () => restoredApps.map((a) => Object.assign({ nodeId: a.name, dir: base + a.name }, a, { current: a.name === current })),
+    RestoredApps: async () => restoredApps.map((a) => Object.assign({ nodeId: a.name, dir: base + a.name, source: "" }, a, { current: a.name === current })),
     // App.UseRestored: the log so far goes to the folder of the backup in use.
     UseRestored: async (name, ask) => {
       if (name === current) return;

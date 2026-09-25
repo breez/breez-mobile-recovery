@@ -110,7 +110,11 @@ func main() {
 			if b.Current {
 				mark = "*"
 			}
-			fmt.Fprintf(out, "%s %s  %s\n", mark, b.Name, b.Dir)
+			source := "" // not known: nothing
+			if b.Source != "" {
+				source = b.Source + "  "
+			}
+			fmt.Fprintf(out, "%s %s  %s%s\n", mark, b.Name, source, b.Dir)
 		}
 	case "use":
 		if len(args) != 1 {

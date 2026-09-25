@@ -82,8 +82,9 @@ restored apps with Back to funds, four and a half without. The three-line
 restored rows are what limits it; a taller default window does not fit
 1366x768 or 150 % scaled 1080p screens. It needs rows of one height: every
 line of a row is one line (titles give way with an ellipsis, tags keep
-their place). Hover darkens a row's outline; the pick has a blue one twice
-as thick and a ring, so the two never look alike.
+their place, a restored app's node id gives way in its middle: `fitIds`).
+Hover darkens a row's outline; the pick has a blue one twice as thick and
+a ring, so the two never look alike.
 
 The frontend talks to Go through `window.go.main.App.<Method>` and receives
 events through `window.runtime.EventsOn`: `progress` (a line of text),
@@ -118,9 +119,13 @@ Every value is rendered with textContent; keep it that way.
   (cross-volume rename failure on Windows). Drive is downloaded with the
   tool's own client (core/drive.go) and marked with the id written into
   the restored folder (`backup/breez_backup_id`), the one the library
-  compares with. A folder is a restored app only with all three node
-  files (`hasNode`); a wallet without its channel database would start
-  with an empty one and show no channels. One program per work folder
+  compares with. The folder's `source` file says where the last restore
+  into it came from (google, icloud, file; the start screen and
+  `recovery backups` show it); a folder of an older release has none and
+  its source shows only for a `zip-` name. Nothing else is taken as a
+  hint. A folder is a restored app only with all three node files
+  (`hasNode`); a wallet without its channel database would start with an
+  empty one and show no channels. One program per work folder
   (core/lock.go). Bitcoin peers the user once set on the phone travel in
   breez.db and replace the configured ones: initLibrary resets them.
 - One folder per backup (core/dirs.go): the work folder holds the sign-ins,
@@ -373,9 +378,9 @@ Every value is rendered with textContent; keep it that way.
 - A node's folder must never hold another node's
   `data/chain/bitcoin/<net>/channel.backup`; one folder per backup rules
   it out, as every restore writes a fresh staging folder with only the
-  node files and the backup id (placeBackupFiles). Why it matters:
-  lnd's SCB is encrypted with the seed of the node that wrote it, and with
-  a foreign one lnd aborts at startup ("unable to extract on disk
+  node files, the backup id and `source` (placeBackupFiles). Why it
+  matters: lnd's SCB is encrypted with the seed of the node that wrote it,
+  and with a foreign one lnd aborts at startup ("unable to extract on disk
   encrypted SCB: chacha20poly1305: message authentication failed"), which
   takes the library down with it and then the process panics (2026-09-17,
   Roy restoring his 2022 backup over the 2019 one).

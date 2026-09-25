@@ -81,20 +81,24 @@ func decodeBackupFiles(files map[string][]byte, key []byte) (map[string][]byte, 
 	return out, nil
 }
 
-// placeBackup writes the decoded node files as the restored backup name. It
+// placeBackup writes the decoded node files as the restored backup name,
+// restored from source (SourceGoogle, SourceICloud or SourceFile). It
 // returns the id this restore goes by in the cloud: the library keeps one
 // per work folder (backup/breez_backup_id, backup/manager.go:673-694) and
 // compares it with the id the cloud copy was last restored under, so the
 // cloud has to be marked with the very id the restored folder carries.
-func (c *Core) placeBackup(name string, decoded map[string][]byte, force bool) (string, error) {
-	id, err := c.placeBackupFiles(name, decoded, force)
+func (c *Core) placeBackup(name, source string, decoded map[string][]byte, force bool) (string, error) {
+	id, err := c.placeBackupFiles(name, source, decoded, force)
 	if err != nil {
 		return "", err
 	}
 	return "backup-id-" + hex.EncodeToString(id), nil
 }
 
-func (c *Core) placeBackupFiles(name string, decoded map[string][]byte, force bool) ([]byte, error) {
+func (c *Core) placeBackupFiles(name, source string, decoded map[string][]byte, force bool) ([]byte, error) {
+	if !knownSource(source) {
+		return nil, fmt.Errorf("unknown backup source %q", source)
+	}
 	if err := c.checkRestoreTarget(name, force); err != nil {
 		return nil, err
 	}
@@ -128,6 +132,9 @@ func (c *Core) placeBackupFiles(name string, decoded map[string][]byte, force bo
 		return nil, err
 	}
 	if err := writeFileSynced(filepath.Join(staging, "backup", "breez_backup_id"), id); err != nil {
+		return nil, err
+	}
+	if err := writeFileSynced(filepath.Join(staging, sourceFile), []byte(source+"\n")); err != nil {
 		return nil, err
 	}
 	// Whatever is at the final place is moved aside, never deleted.

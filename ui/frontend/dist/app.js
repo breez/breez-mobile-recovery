@@ -81,6 +81,9 @@
     return "about " + Math.round(mins / 60 / 24) + " days";
   }
   function shortId(id) { return id ? id.slice(0, 10) + "…" + id.slice(-6) : ""; }
+  // Where a restored backup came from (RestoredBackup.Source), named as on
+  // the source screen.
+  const sourceNames = { google: "Google Drive", icloud: "iCloud", file: "Backup file" };
   function el(tag, cls, text) {
     const e = document.createElement(tag);
     if (cls) e.className = cls;
@@ -118,8 +121,25 @@
     list.style.maxHeight = pad + n * pitch + peek + "px";
     reveal(list, list.querySelector(".selected"));
   }
-  function fitLists() { fitList($("#restored-list")); fitList($("#snapshot-list")); }
+  function fitLists() { fitList($("#restored-list")); fitList($("#snapshot-list")); fitIds($("#restored-list")); }
   new ResizeObserver(fitLists).observe($("#main"));
+
+  // A restored app's node id is whole when its line has room, else it gives
+  // way in its middle as shortId does: both ends stay in view.
+  function fitIds(list) {
+    if (!list.offsetParent) return; // hidden: fitted when it shows
+    list.querySelectorAll(".mid-id").forEach((s) => {
+      const id = s.dataset.id;
+      s.textContent = id;
+      const before = s.previousElementSibling;
+      const room = s.parentElement.clientWidth - (before ? before.getBoundingClientRect().width : 0);
+      const width = s.getBoundingClientRect().width;
+      if (width <= room) return;
+      // A mono font: every character, the ellipsis too, is as wide.
+      const head = Math.max(1, Math.floor(room / (width / id.length)) - 7);
+      s.textContent = id.slice(0, head) + "…" + id.slice(-6);
+    });
+  }
 
   // Scrolls the list, not the page, so that row shows whole.
   function reveal(list, row) {
@@ -253,8 +273,18 @@
         title.appendChild(t);
       }
       main.appendChild(title);
-      // A backup file whose node id is not known shows as such.
-      main.appendChild(el("div", "item-sub", a.nodeId || "From a backup file"));
+      // Where it was last restored from, when that is known, then the node
+      // id. A backup file whose node id is not known shows as such.
+      const sub = el("div", "item-sub plain");
+      if (a.nodeId) {
+        const from = sourceNames[a.source];
+        if (from) sub.appendChild(el("span", "item-from", from + " · "));
+        const id = el("span", "mid-id", a.nodeId);
+        id.dataset.id = a.nodeId; // what fitIds shortens
+        sub.appendChild(id);
+        sub.title = a.nodeId;
+      } else sub.textContent = "From a backup file";
+      main.appendChild(sub);
       // What its funds screen showed last, under the id, in the tiles'
       // terms and order; it may have changed since. Nothing when that was
       // nothing.
@@ -278,6 +308,7 @@
     });
     selectRow(list, list.children[apps.findIndex((a) => a.name === ui.useName)]);
     fitList(list);
+    fitIds(list); // once a scroll bar took its room
   }
 
   async function applySettings() {

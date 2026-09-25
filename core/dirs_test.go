@@ -95,16 +95,32 @@ func fakeNode(t *testing.T, dir, marker string) {
 	}
 }
 
-// place restores a small backup the way every restore does.
+// place restores a small backup the way every restore does, from a backup
+// file for a "zip-" name and from Google Drive for a node id.
 func place(t *testing.T, c *Core, name, marker string, force bool) error {
+	t.Helper()
+	source := SourceGoogle
+	if strings.HasPrefix(name, "zip-") {
+		source = SourceFile
+	}
+	return placeFrom(t, c, name, source, marker, force)
+}
+
+func placeFrom(t *testing.T, c *Core, name, source, marker string, force bool) error {
+	t.Helper()
+	_, err := c.placeBackup(name, source, testNodeFiles(t, marker), force)
+	return err
+}
+
+// testNodeFiles are the three node files of a small backup.
+func testNodeFiles(t *testing.T, marker string) map[string][]byte {
 	t.Helper()
 	content := testDB(t, marker)
 	files := map[string][]byte{}
 	for file := range nodeFileTargets("") {
 		files[file] = content
 	}
-	_, err := c.placeBackup(name, files, force)
-	return err
+	return files
 }
 
 const nodeA = "02e66bcb1e3c97de679c0d5b2f831ac913e53acdc99542ed839c17b1079df489ea"
@@ -277,6 +293,55 @@ func TestRestoredBackupsNodeID(t *testing.T) {
 	}
 }
 
+// The list says where each backup was last restored from, as kept in its
+// folder. A folder restored before that was kept is a backup file only
+// when its name says so, and otherwise not known: nothing is guessed.
+func TestRestoredBackupsSource(t *testing.T) {
+	root := t.TempDir()
+	c := testCore(t, root)
+	const nodeC = "03a1c9e44b2f7d6e8a0b5c3d1e9f7a2b4c6d8e0f1a3b5c7d9e1f3a5b7c9d1e3f5a"
+	const zipNew, zipOld = "zip-00000000000000b1", "zip-00000000000000b2"
+	if err := placeFrom(t, c, nodeA, SourceGoogle, "A", false); err != nil {
+		t.Fatal(err)
+	}
+	if err := placeFrom(t, c, nodeB, SourceICloud, "B", false); err != nil {
+		t.Fatal(err)
+	}
+	if err := placeFrom(t, c, zipNew, SourceFile, "Z", false); err != nil {
+		t.Fatal(err)
+	}
+	// Restored by an earlier release: no source kept.
+	fakeNode(t, c.backupDir(zipOld), "old zip")
+	fakeNode(t, c.backupDir(nodeC), "old cloud")
+	// Restoring again replaces it: the list says the last one.
+	if err := placeFrom(t, c, nodeA, SourceICloud, "A2", true); err != nil {
+		t.Fatal(err)
+	}
+	if err := placeFrom(t, c, nodeA, "dropbox", "A3", true); err == nil {
+		t.Fatal("an unknown source was accepted")
+	}
+
+	got := map[string]string{}
+	for _, b := range c.RestoredBackups() {
+		got[b.Name] = b.Source
+	}
+	want := map[string]string{nodeA: SourceICloud, nodeB: SourceICloud, zipNew: SourceFile, zipOld: SourceFile, nodeC: ""}
+	for name, source := range want {
+		if got[name] != source {
+			t.Errorf("%s: source %q, want %q", name, got[name], source)
+		}
+	}
+	// What the file holds is used only when it is one of the three.
+	if err := os.WriteFile(filepath.Join(c.backupDir(nodeB), sourceFile), []byte("dropbox\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	for _, b := range c.RestoredBackups() {
+		if b.Name == nodeB && b.Source != "" {
+			t.Errorf("%s: source %q from an unknown value, want none", b.Name, b.Source)
+		}
+	}
+}
+
 // list in breez.db, read without the library.
 func TestRestoredBackupsPayments(t *testing.T) {
 	root := t.TempDir()
@@ -383,7 +448,7 @@ func TestFailedRestoreLeavesTheOldOneAlone(t *testing.T) {
 		whole := testDB(t, "cut")
 		cut[name] = whole[:len(whole)/2]
 	}
-	if _, err := c.placeBackup(nodeA, cut, true); err == nil {
+	if _, err := c.placeBackup(nodeA, SourceGoogle, cut, true); err == nil {
 		t.Fatal("databases cut short were placed")
 	}
 	if got := markerOf(t, wallet); got != "first" {

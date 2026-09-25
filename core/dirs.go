@@ -166,6 +166,10 @@ type RestoredBackup struct {
 	NodeID  string `json:"nodeId,omitempty"`
 	Dir     string `json:"dir"`
 	Current bool   `json:"current"`
+	// Source is where it was last restored from: SourceGoogle,
+	// SourceICloud or SourceFile, "" when that is not known (restored by
+	// a release that did not keep it).
+	Source string `json:"source"`
 	// LastOpened is when its node last ran here (the time of its lnd log);
 	// nil if it never did.
 	LastOpened *time.Time `json:"lastOpened,omitempty"`
@@ -185,7 +189,7 @@ func (c *Core) RestoredBackups() []RestoredBackup {
 	for _, e := range entries {
 		dir := c.backupDir(e.Name())
 		if e.IsDir() && backupNameRE.MatchString(e.Name()) && hasNode(dir, c.cfg.Network) {
-			rb := RestoredBackup{Name: e.Name(), Dir: dir, Current: dir == c.nodeDir, NodeID: e.Name()}
+			rb := RestoredBackup{Name: e.Name(), Dir: dir, Current: dir == c.nodeDir, NodeID: e.Name(), Source: backupSource(dir, e.Name())}
 			if strings.HasPrefix(e.Name(), "zip-") {
 				rb.NodeID = ""
 				if raw, err := os.ReadFile(filepath.Join(dir, nodeIDFile)); err == nil {
@@ -226,6 +230,37 @@ func (c *Core) RestoredBackups() []RestoredBackup {
 // nodeIDFile keeps the node id of a backup restored from a file, whose
 // folder is named after the file (the id is only readable once decrypted).
 const nodeIDFile = "node-id"
+
+// Where a backup was restored from (RestoredBackup.Source).
+const (
+	SourceGoogle = "google"
+	SourceICloud = "icloud"
+	SourceFile   = "file"
+)
+
+// sourceFile keeps the Source of the last restore into a backup's folder.
+// It is written with the node files (placeBackupFiles), so a folder never
+// has the files of one restore and the source of another.
+const sourceFile = "source"
+
+func knownSource(s string) bool {
+	return s == SourceGoogle || s == SourceICloud || s == SourceFile
+}
+
+// backupSource reads where the backup in the folder dir, named name, was
+// last restored from. A folder restored before sourceFile existed is known
+// only when its name says it: "zip-" names come from a backup file.
+// Nothing else is taken as a hint.
+func backupSource(dir, name string) string {
+	raw, _ := os.ReadFile(filepath.Join(dir, sourceFile))
+	if s := strings.TrimSpace(string(raw)); knownSource(s) {
+		return s
+	}
+	if strings.HasPrefix(name, "zip-") {
+		return SourceFile
+	}
+	return ""
+}
 
 // nodeIDOf reads a restored node's public key without starting it. First
 // from the app's account in breez.db, where the account service keeps
