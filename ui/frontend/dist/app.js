@@ -52,8 +52,12 @@
 
   function errMsg(e) {
     if (!e) return "Unknown error";
-    if (typeof e === "string") return e;
-    return e.message || String(e);
+    return sentence(typeof e === "string" ? e : e.message || String(e));
+  }
+  // Go errors start lowercase; on screen a message starts a sentence.
+  // Names with their own casing (iCloud, macOS, lnd) keep it.
+  function sentence(s) {
+    return /^[a-z]+\b/.test(s) && !/^(lnd|lncli)\b/.test(s) ? s[0].toUpperCase() + s.slice(1) : s;
   }
   function isCancel(e) { return /cancelled|context canceled/i.test(errMsg(e)); }
   // The node is gone (it crashed, or was never started): the calls that
