@@ -453,6 +453,34 @@ Every value is rendered with textContent; keep it that way.
   would need to report must be in there.
 - Keep the README test plan matrix current in the same change as a fix.
 
+## Contributions and PR review (decided by the product owner, 2026-09-26)
+
+The tool is used once, by a user with one backup, to move funds out. That
+sets the bar for every change, whoever opens the PR (a team member or
+Claude in another session):
+
+- No regressions. A change to the restore, chain walk, channel check,
+  node start, stop or restart path needs a reason a user would feel, and
+  a test or a real run showing the old behaviour still holds. Do not
+  change how the node stops or how the app restarts itself for speed.
+- No nice-to-have fixes. Cosmetics (window position, styling, log
+  wording, bundle names, animated labels) and conveniences are not
+  merged on their own; a real bug is one where a user loses funds, time,
+  data, or is told something wrong.
+- No features for the many-backups case. No restored-apps picker, no
+  funds cache, no switching between backups in one window, no second
+  process for the node. Restore another backup = restart the app, as it
+  is.
+- Small PRs, one bug each, off main, with a test that fails without the
+  fix. A PR that mixes a real fix with feature work gets closed and the
+  fix asked for on its own (or taken out by hand, as #5 did from #3/#4).
+- Anything under this repo is pushed only with Roy's explicit OK per
+  PR, tag and release.
+
+History: PR #2 (iCloud session rotation) merged; #3 (multi-backup UI,
+faster restart) and #4 (node in a helper process, 4.4k lines) closed for
+the reasons above, their two real bugs taken into #5.
+
 ## Releases
 
 Tag `vX.Y.Z` (a dash suffix marks a pre-release) and push; the workflow
