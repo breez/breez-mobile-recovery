@@ -41,7 +41,9 @@ The Google client is not in the source: for a local run set
 `BREEZ_GOOGLE_CLIENT_ID` and `BREEZ_GOOGLE_CLIENT_SECRET` (the Desktop app
 OAuth client of the `breez-technology` Google Cloud project), or bake them
 in with `-ldflags "-X .../core.GoogleClientID=<id> -X .../core.GoogleClientSecret=<secret>"`. `BREEZ_RECOVERY_WORKDIR` overrides the work
-folder, useful for testing next to a real one.
+folder, useful for testing next to a real one; `BREEZ_RECOVERY_PEERS` the
+peers. The app sets both for its restarted copy, so Advanced settings
+survive a restart.
 
 `go test ./core` covers the phrase to key derivation and decryption.
 `go vet -tags walletrpc,chainrpc ./core . && go vet -tags webkit2_41,walletrpc,chainrpc ./ui` before
