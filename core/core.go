@@ -93,6 +93,7 @@ func DefaultConfig() Config {
 	}
 	return Config{
 		WorkDir:            firstNonEmpty(os.Getenv("BREEZ_RECOVERY_WORKDIR"), workDir),
+		Peers:              os.Getenv("BREEZ_RECOVERY_PEERS"), // set by the app for its restarted copy
 		Network:            "mainnet",
 		BreezServer:        DefaultBreezServer,
 		BootstrapURL:       DefaultBootstrapURL,
@@ -1125,6 +1126,10 @@ func (c *Core) checkPeers(ctx context.Context) error {
 	ok := 0
 	for _, p := range c.peers() {
 		if err := bitcoinHandshake(ctx, p); err != nil {
+			// A stop is not a peer that does not answer.
+			if ctx.Err() != nil {
+				return ctx.Err()
+			}
 			reasons = append(reasons, p+": "+err.Error())
 			c.progressf("Bitcoin peer %s does not answer: %v", p, err)
 			continue

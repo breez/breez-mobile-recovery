@@ -498,6 +498,23 @@ func (a *App) StartAndSync() (*core.Status, error) {
 // ("restore-other").
 const relaunchEnv = "BREEZ_RECOVERY_RELAUNCH"
 
+// withEnv returns env with the key=value pairs of set replacing any
+// earlier values of those keys.
+func withEnv(env []string, set ...string) []string {
+	keys := map[string]bool{}
+	for _, kv := range set {
+		k, _, _ := strings.Cut(kv, "=")
+		keys[k] = true
+	}
+	var out []string
+	for _, kv := range env {
+		if k, _, _ := strings.Cut(kv, "="); !keys[k] {
+			out = append(out, kv)
+		}
+	}
+	return append(out, set...)
+}
+
 // relaunch starts a fresh copy of this program, then quits this one. Used
 // when the node or the library needs a program restart.
 func (a *App) relaunch(then string) {
@@ -507,12 +524,15 @@ func (a *App) relaunch(then string) {
 		return
 	}
 	cmd := exec.Command(exe)
-	for _, kv := range os.Environ() {
-		if !strings.HasPrefix(kv, relaunchEnv+"=") {
-			cmd.Env = append(cmd.Env, kv)
-		}
-	}
-	cmd.Env = append(cmd.Env, relaunchEnv+"="+then)
+	a.coreMu.Lock()
+	workDir, peers := a.cfg.WorkDir, a.cfg.Peers
+	a.coreMu.Unlock()
+	// The Advanced settings go along; the new copy would otherwise use the
+	// default work folder and peers.
+	cmd.Env = withEnv(os.Environ(),
+		relaunchEnv+"="+then,
+		"BREEZ_RECOVERY_WORKDIR="+workDir,
+		"BREEZ_RECOVERY_PEERS="+peers)
 	if err := cmd.Start(); err != nil {
 		a.relaunchFailed(err)
 		return
