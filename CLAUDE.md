@@ -395,8 +395,10 @@ Every value is rendered with textContent; keep it that way.
   bar. Apple's callback is the static page on the breez library repo's
   gh-pages branch, registered with the CloudKit token; changing it means a
   new token in the CloudKit Console (Production environment).
-- iCloud has not been tested end to end; the team member with an iOS
-  backup does that.
+- iCloud on macOS: sign-in, list and restore run 2026-09-24 (Erdem, PR
+  #2, which also fixed the session token: CloudKit rotates it on every
+  reply and the client must send the new one). Sync and funds after an
+  iCloud restore not yet confirmed.
 
 ## Reference (moved out of the README, which is for users)
 
